@@ -1,0 +1,21 @@
+# Windows and editor temporary files
+Thumbs.db
+Desktop.ini
+*.tmp
+*.bak
+*.orig
+
+# Keil MDK generated/user-local files
+RBLink_DAP_V3.0/MDK-ARM/DebugConfig/
+RBLink_DAP_V3.0/MDK-ARM/*.uvguix.*
+RBLink_DAP_V3.0/MDK-ARM/*.scvd
+
+# ESP-IDF generated files (also covered by esp32c3/.gitignore)
+esp32c3/build/
+esp32c3/managed_components/
+esp32c3/sdkconfig.old
+esp32c3/dependencies.lock
+esp32c3/test_protocol
+esp32c3/test_protocol.exe
+esp32c3/**/__pycache__/
+esp32c3/**/*.pyc

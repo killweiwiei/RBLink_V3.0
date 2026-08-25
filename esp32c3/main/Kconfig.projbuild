@@ -1,0 +1,25 @@
+menu "RBlink wireless bridge"
+
+config RBLINK_AP_SSID_PREFIX
+    string "SoftAP SSID prefix"
+    default "RBlink"
+    help
+        The final SSID is this prefix followed by the last three MAC bytes.
+
+config RBLINK_AP_PASSWORD
+    string "SoftAP WPA2 password"
+    default "RBlinkV30!"
+    help
+        Must contain 8 to 63 characters. Change this before releasing a product.
+
+config RBLINK_TCP_PORT
+    int "RBlink TCP port"
+    range 1024 65535
+    default 3240
+
+config RBLINK_SPI_QUEUE_DEPTH
+    int "Inter-task frame queue depth"
+    range 2 32
+    default 8
+
+endmenu

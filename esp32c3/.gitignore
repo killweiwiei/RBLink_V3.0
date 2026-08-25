@@ -1,0 +1,9 @@
+/build/
+/managed_components/
+/sdkconfig
+/sdkconfig.old
+/dependencies.lock
+/test_protocol
+/test_protocol.exe
+__pycache__/
+*.pyc
