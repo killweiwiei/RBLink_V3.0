@@ -23,6 +23,20 @@ int main(void)
     frame.payload[0] ^= 1U;
     assert(rblink_frame_is_valid(&frame));
 
+    frame.reserved0 = 1U;
+    frame.crc32 = 0U;
+    frame.crc32 = rblink_crc32(&frame, sizeof(frame));
+    assert(!rblink_frame_is_valid(&frame));
+    frame.reserved0 = 0U;
+
+    memset(frame.payload, 0xA5, sizeof(frame.payload));
+    frame.channel = RBLINK_CHANNEL_CONTROL;
+    frame.payload_length = 1U;
+    rblink_frame_finalize(&frame);
+    assert(frame.payload[0] == 0xA5U);
+    assert(frame.payload[1] == 0U);
+    assert(rblink_frame_is_valid(&frame));
+
     rblink_frame_make_idle(&frame, 9U);
     assert(frame.channel == RBLINK_CHANNEL_IDLE);
     assert(frame.sequence == 9U);

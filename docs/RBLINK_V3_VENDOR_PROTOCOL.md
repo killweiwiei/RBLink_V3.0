@@ -9,8 +9,17 @@ All multi-byte integers are little-endian. A request after the command byte is `
 | `0x85` | SPI2 | `speed:u32, mode:u8, lsb_first:u8` | `cs_hold:u8, count:u8, tx[count]`; returns simultaneous RX bytes |
 | `0x86` | I2C3 | `speed:u32` (up to 400 kHz) | `address7:u8, write_len:u8, read_len:u8, write_data[]`; returns read bytes |
 | `0x87` | CAN1 | `bitrate:u32` | `flags:u8, id:u32, dlc:u8, data[]`; `flags.bit7=1` polls one received frame |
+| `0x88` | Wi-Fi | transactional `BEGIN/CHUNK/COMMIT` | returns ESP configuration, STA/AP state, SSID and IPv4 address |
+| `0x89` | Storage/Algorithm | reserved for object-level NOR storage and resumable upload | specified in `RBLINK_EXTERNAL_FLASH_AND_ALGORITHM.md`; not implemented yet |
 | `0x8E` | Power | `enable:u8, dac_raw:u16` | no data; returns `enabled`, then PA2 VREF, PA1 VOUT and PA0 NTC raw 12-bit ADC values；返回字段顺序仍为VREF、VOUT、NTC |
-| `0x8F` | Information | payload length must be zero | returns protocol major/minor and capability bits |
+| `0x8F` | Information | payload length must be zero | returns protocol major/minor, capability bits, firmware major/minor/patch and board revision |
+
+The information payload is `[protocol_major, protocol_minor, capabilities:u16, firmware_major, firmware_minor, firmware_patch, board_revision]`. Hosts must accept the original four-byte prefix so older V3 firmware remains usable.
+
+Wi-Fi `0x88` configure data starts with suboperation `BEGIN=0`, `CHUNK=1`, or
+`COMMIT=2`. Transfer returns `[flags, ssid_length, ssid..., ipv4]`; flags bit 0
+means configured, bit 1 STA connected, and bit 2 AP active. Close clears saved
+router credentials. The password is never returned.
 
 CAN flag bit 0 selects a 29-bit extended ID, bit 1 selects a remote frame, and bit 7 selects reception. A received CAN frame is returned as `flags, id:u32, dlc, data[]`. An empty successful receive response means that no frame is queued.
 

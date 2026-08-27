@@ -42,13 +42,18 @@
 /* Target buses. */
 #define RB_SPI_NSS_PORT        GPIOB
 #define RB_SPI_NSS_PIN         GPIO_PIN_12
-#define RB_SPI_PINS            (GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15) /* SPI2 */
+#define RB_SPI_SCK_PIN         GPIO_PIN_13
+#define RB_SPI_MISO_PIN        GPIO_PIN_14
+#define RB_SPI_MOSI_PIN        GPIO_PIN_15
+#define RB_SPI_PINS            (RB_SPI_SCK_PIN | RB_SPI_MISO_PIN | RB_SPI_MOSI_PIN) /* SPI2 */
 #define RB_I2C_SCL_PORT        GPIOA
 #define RB_I2C_SCL_PIN         GPIO_PIN_8
 #define RB_I2C_SDA_PORT        GPIOC
 #define RB_I2C_SDA_PIN         GPIO_PIN_9
 #define RB_CAN_PORT            GPIOB
-#define RB_CAN_PINS            (GPIO_PIN_8 | GPIO_PIN_9)
+#define RB_CAN_RX_PIN          GPIO_PIN_8
+#define RB_CAN_TX_PIN          GPIO_PIN_9
+#define RB_CAN_PINS            (RB_CAN_RX_PIN | RB_CAN_TX_PIN)
 
 /* ESP32-C3 SPI1 bridge. */
 #define RB_ESP_EN_PORT         GPIOE

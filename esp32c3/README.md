@@ -26,13 +26,16 @@ transaction and may transfer an IDLE frame when it only needs to poll.
 
 - ESP32-C3 is an SPI2 slave; STM32 SPI1 is the master, mode 0.
 - Both SPI and TCP use one fixed 512-byte frame, including CRC-32.
-- Channels are `0 control`, `1 CMSIS-DAP`, `2 UART`, `3 LTLink vendor`, and
+- Channels are `0 control`, `1 CMSIS-DAP`, `2 UART`, `3 RBLink vendor`, and
   `4 log`; `0xFF` is an idle poll.
 - Control operations `0x01 PING` and `0x02 GET_INFO` terminate locally on ESP,
   allowing the PC to verify Wi-Fi and protocol health without STM32 traffic.
-- The ESP starts a WPA2 SoftAP named `RBlink-xxxxxx` and listens on TCP port
-  `3240`. Only one PC client is allowed, matching one link controlling one
-  target at a time.
+- The ESP runs in AP+STA mode. Its WPA2 SoftAP is named `RBlink-xxxxxx`; saved
+  router credentials are loaded from NVS and reconnect automatically. TCP port
+  `3240` is reachable through either interface. Only one PC client is allowed.
+- Open `http://192.168.4.1` while connected to the RBLink AP for web
+  provisioning. USB local provisioning goes through the STM32 CMSIS-DAP
+  vendor command and SPI control channel; ESP native USB is not used for it.
 - Change the default Wi-Fi password in `menuconfig` before production release.
 
 The current implementation is a transparent transport. CMSIS-DAP execution,
@@ -41,7 +44,7 @@ share the same target-side implementation.
 
 ## Build
 
-The verified environment is ESP-IDF v5.5.5 installed at
+The verified environment is ESP-IDF v5.5.5 with its Python 3.12 environment installed at
 `D:\Program Files (x86)\Espressif\.espressif`. This project includes a wrapper which sets
 all required paths, so no activated terminal is required:
 

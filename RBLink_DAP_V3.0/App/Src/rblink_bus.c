@@ -3,29 +3,6 @@
 #include "stm32f4xx_hal.h"
 #include "rblink_board.h"
 
-/* Keep the protocol backend readable while the public board contract uses the
-   RB_ prefix. These aliases are local to this migration unit. */
-#define LTLINK_SPI_NSS_PIN       RB_SPI_NSS_PIN
-#define LTLINK_SPI_SCK_PIN       GPIO_PIN_13
-#define LTLINK_SPI_MISO_PIN      GPIO_PIN_14
-#define LTLINK_SPI_MOSI_PIN      GPIO_PIN_15
-#define LTLINK_I2C_SCL_PORT      RB_I2C_SCL_PORT
-#define LTLINK_I2C_SCL_PIN       RB_I2C_SCL_PIN
-#define LTLINK_I2C_SDA_PORT      RB_I2C_SDA_PORT
-#define LTLINK_I2C_SDA_PIN       RB_I2C_SDA_PIN
-#define LTLINK_CAN_RX_PIN        GPIO_PIN_8
-#define LTLINK_CAN_TX_PIN        GPIO_PIN_9
-#define LTLINK_LDO_EN_PORT       RB_LDO_EN_PORT
-#define LTLINK_LDO_EN_PIN        RB_LDO_EN_PIN
-#define LTLINK_BOOST_EN_PORT     RB_BOOST_EN_PORT
-#define LTLINK_BOOST_EN_PIN      RB_BOOST_EN_PIN
-#define LTLINK_ADC_VREF_PIN      RB_ADC_VREF_PIN
-#define LTLINK_ADC_VOUT_PIN      RB_ADC_VOUT_PIN
-#define LTLINK_ADC_NTC_PIN       RB_ADC_NTC_PIN
-#define LTLINK_DAC_VOUT_PIN      RB_DAC_VOUT_PIN
-#define ltlink_spi_port_enable   RB_SPI_Enable
-#define ltlink_i2c_port_enable   RB_I2C_Enable
-
 #define LT_OK          0x00U
 #define LT_BAD_LENGTH  0x01U
 #define LT_BAD_ACTION  0x02U
@@ -65,9 +42,9 @@ static uint8_t spi_config(const uint8_t *p, uint8_t len)
 
     __HAL_RCC_GPIOB_CLK_ENABLE();
     /* Always release chip select before reconfiguring clock polarity. */
-    HAL_GPIO_WritePin(GPIOB, LTLINK_SPI_NSS_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(RB_SPI_NSS_PORT, RB_SPI_NSS_PIN, GPIO_PIN_SET);
     __HAL_RCC_SPI2_CLK_ENABLE();
-    gpio.Pin = LTLINK_SPI_SCK_PIN | LTLINK_SPI_MISO_PIN | LTLINK_SPI_MOSI_PIN;
+    gpio.Pin = RB_SPI_PINS;
     gpio.Mode = GPIO_MODE_AF_PP;
     gpio.Pull = GPIO_NOPULL;
     gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
@@ -99,20 +76,20 @@ static uint8_t spi_config(const uint8_t *p, uint8_t len)
     hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
     hspi2.Init.CRCPolynomial = 7U;
     if (HAL_SPI_Init(&hspi2) != HAL_OK) return LT_IO_ERROR;
-    HAL_GPIO_WritePin(GPIOB, LTLINK_SPI_NSS_PIN, GPIO_PIN_SET);
-    ltlink_spi_port_enable(1);
+    HAL_GPIO_WritePin(RB_SPI_NSS_PORT, RB_SPI_NSS_PIN, GPIO_PIN_SET);
+    RB_SPI_Enable(1U);
     return LT_OK;
 }
 
-uint8_t ltlink_platform_spi(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *rlen)
+uint8_t rblink_platform_spi(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *rlen)
 {
     uint8_t count;
     uint8_t tx[56] = {0xFFU};
     uint8_t rx[56];
     if (p[0] == 2U) {
         if (len != 1U) return LT_BAD_LENGTH;
-        HAL_GPIO_WritePin(GPIOB, LTLINK_SPI_NSS_PIN, GPIO_PIN_SET);
-        ltlink_spi_port_enable(0);
+        HAL_GPIO_WritePin(RB_SPI_NSS_PORT, RB_SPI_NSS_PIN, GPIO_PIN_SET);
+        RB_SPI_Enable(0U);
         if (hspi2.Instance == SPI2) (void)HAL_SPI_DeInit(&hspi2);
         memset(&hspi2, 0, sizeof(hspi2));
         return LT_OK;
@@ -125,18 +102,18 @@ uint8_t ltlink_platform_spi(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *
     count = p[2];
     /* A zero-byte transfer is an explicit CS control/recovery operation. */
     if (count == 0U) {
-        HAL_GPIO_WritePin(GPIOB, LTLINK_SPI_NSS_PIN,
+        HAL_GPIO_WritePin(RB_SPI_NSS_PORT, RB_SPI_NSS_PIN,
                          p[1] ? GPIO_PIN_RESET : GPIO_PIN_SET);
         *rlen = 0U;
         return LT_OK;
     }
     memcpy(tx, &p[3], count);
-    HAL_GPIO_WritePin(GPIOB, LTLINK_SPI_NSS_PIN, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(RB_SPI_NSS_PORT, RB_SPI_NSS_PIN, GPIO_PIN_RESET);
     if (HAL_SPI_TransmitReceive(&hspi2, tx, rx, count, LT_TIMEOUT_MS) != HAL_OK) {
-        HAL_GPIO_WritePin(GPIOB, LTLINK_SPI_NSS_PIN, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(RB_SPI_NSS_PORT, RB_SPI_NSS_PIN, GPIO_PIN_SET);
         return LT_IO_ERROR;
     }
-    if (p[1] == 0U) HAL_GPIO_WritePin(GPIOB, LTLINK_SPI_NSS_PIN, GPIO_PIN_SET);
+    if (p[1] == 0U) HAL_GPIO_WritePin(RB_SPI_NSS_PORT, RB_SPI_NSS_PIN, GPIO_PIN_SET);
     memcpy(r, rx, count);
     *rlen = count;
     return LT_OK;
@@ -149,14 +126,14 @@ static uint8_t i2c_config(const uint8_t *p, uint8_t len)
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOC_CLK_ENABLE();
     __HAL_RCC_I2C3_CLK_ENABLE();
-    gpio.Pin = LTLINK_I2C_SCL_PIN;
+    gpio.Pin = RB_I2C_SCL_PIN;
     gpio.Mode = GPIO_MODE_AF_OD;
     gpio.Pull = GPIO_NOPULL; /* External 4.7 kOhm pull-ups are fitted. */
     gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     gpio.Alternate = GPIO_AF4_I2C3;
-    HAL_GPIO_Init(LTLINK_I2C_SCL_PORT, &gpio);
-    gpio.Pin = LTLINK_I2C_SDA_PIN;
-    HAL_GPIO_Init(LTLINK_I2C_SDA_PORT, &gpio);
+    HAL_GPIO_Init(RB_I2C_SCL_PORT, &gpio);
+    gpio.Pin = RB_I2C_SDA_PIN;
+    HAL_GPIO_Init(RB_I2C_SDA_PORT, &gpio);
     memset(&hi2c3, 0, sizeof(hi2c3));
     hi2c3.Instance = I2C3;
     hi2c3.Init.ClockSpeed = get_u32(&p[1]);
@@ -169,7 +146,7 @@ static uint8_t i2c_config(const uint8_t *p, uint8_t len)
     hi2c3.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
     hi2c3.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
     if (HAL_I2C_Init(&hi2c3) != HAL_OK) return LT_IO_ERROR;
-    ltlink_i2c_port_enable(1);
+    RB_I2C_Enable(1U);
     return LT_OK;
 }
 
@@ -182,35 +159,35 @@ static void i2c_recover_bus(void)
      * become GPIO open-drain, provide up to nine clocks, generate STOP, then
      * restore I2C3. Never drive either line high. */
     (void)HAL_I2C_DeInit(&hi2c3);
-    gpio.Pin = LTLINK_I2C_SCL_PIN;
+    gpio.Pin = RB_I2C_SCL_PIN;
     gpio.Mode = GPIO_MODE_OUTPUT_OD;
     gpio.Pull = GPIO_NOPULL;
     gpio.Speed = GPIO_SPEED_FREQ_HIGH;
-    HAL_GPIO_Init(LTLINK_I2C_SCL_PORT, &gpio);
-    gpio.Pin = LTLINK_I2C_SDA_PIN;
-    HAL_GPIO_Init(LTLINK_I2C_SDA_PORT, &gpio);
-    HAL_GPIO_WritePin(LTLINK_I2C_SCL_PORT, LTLINK_I2C_SCL_PIN, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(LTLINK_I2C_SDA_PORT, LTLINK_I2C_SDA_PIN, GPIO_PIN_SET);
+    HAL_GPIO_Init(RB_I2C_SCL_PORT, &gpio);
+    gpio.Pin = RB_I2C_SDA_PIN;
+    HAL_GPIO_Init(RB_I2C_SDA_PORT, &gpio);
+    HAL_GPIO_WritePin(RB_I2C_SCL_PORT, RB_I2C_SCL_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(RB_I2C_SDA_PORT, RB_I2C_SDA_PIN, GPIO_PIN_SET);
     for (pulse = 0U; (pulse < 9U) &&
-         (HAL_GPIO_ReadPin(LTLINK_I2C_SDA_PORT, LTLINK_I2C_SDA_PIN) == GPIO_PIN_RESET); ++pulse) {
-        HAL_GPIO_WritePin(LTLINK_I2C_SCL_PORT, LTLINK_I2C_SCL_PIN, GPIO_PIN_RESET);
+         (HAL_GPIO_ReadPin(RB_I2C_SDA_PORT, RB_I2C_SDA_PIN) == GPIO_PIN_RESET); ++pulse) {
+        HAL_GPIO_WritePin(RB_I2C_SCL_PORT, RB_I2C_SCL_PIN, GPIO_PIN_RESET);
         HAL_Delay(1U);
-        HAL_GPIO_WritePin(LTLINK_I2C_SCL_PORT, LTLINK_I2C_SCL_PIN, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(RB_I2C_SCL_PORT, RB_I2C_SCL_PIN, GPIO_PIN_SET);
         HAL_Delay(1U);
     }
-    HAL_GPIO_WritePin(LTLINK_I2C_SDA_PORT, LTLINK_I2C_SDA_PIN, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(RB_I2C_SDA_PORT, RB_I2C_SDA_PIN, GPIO_PIN_RESET);
     HAL_Delay(1U);
-    HAL_GPIO_WritePin(LTLINK_I2C_SCL_PORT, LTLINK_I2C_SCL_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(RB_I2C_SCL_PORT, RB_I2C_SCL_PIN, GPIO_PIN_SET);
     HAL_Delay(1U);
-    HAL_GPIO_WritePin(LTLINK_I2C_SDA_PORT, LTLINK_I2C_SDA_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(RB_I2C_SDA_PORT, RB_I2C_SDA_PIN, GPIO_PIN_SET);
 
     gpio.Mode = GPIO_MODE_AF_OD;
     gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     gpio.Alternate = GPIO_AF4_I2C3;
-    gpio.Pin = LTLINK_I2C_SCL_PIN;
-    HAL_GPIO_Init(LTLINK_I2C_SCL_PORT, &gpio);
-    gpio.Pin = LTLINK_I2C_SDA_PIN;
-    HAL_GPIO_Init(LTLINK_I2C_SDA_PORT, &gpio);
+    gpio.Pin = RB_I2C_SCL_PIN;
+    HAL_GPIO_Init(RB_I2C_SCL_PORT, &gpio);
+    gpio.Pin = RB_I2C_SDA_PIN;
+    HAL_GPIO_Init(RB_I2C_SDA_PORT, &gpio);
     (void)HAL_I2C_Init(&hi2c3);
 }
 
@@ -223,12 +200,12 @@ static uint8_t i2c_failed(void)
     return LT_IO_ERROR;
 }
 
-uint8_t ltlink_platform_i2c(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *rlen)
+uint8_t rblink_platform_i2c(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *rlen)
 {
     uint8_t addr, txlen, rxlen;
     if (p[0] == 2U) {
         if (len != 1U) return LT_BAD_LENGTH;
-        ltlink_i2c_port_enable(0);
+        RB_I2C_Enable(0U);
         if (hi2c3.Instance == I2C3) (void)HAL_I2C_DeInit(&hi2c3);
         memset(&hi2c3, 0, sizeof(hi2c3));
         return LT_OK;
@@ -258,7 +235,7 @@ uint8_t ltlink_platform_i2c(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *
     return LT_OK;
 }
 
-uint8_t ltlink_platform_can(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *rlen)
+uint8_t rblink_platform_can(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *rlen)
 {
     CAN_TxHeaderTypeDef header = {0};
     CAN_RxHeaderTypeDef rx_header = {0};
@@ -284,7 +261,7 @@ uint8_t ltlink_platform_can(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *
         prescaler = 42000000U / (bitrate * 14U);
         if ((prescaler == 0U) || (prescaler > 1024U)) return LT_BAD_LENGTH;
         __HAL_RCC_GPIOB_CLK_ENABLE(); __HAL_RCC_CAN1_CLK_ENABLE();
-        gpio.Pin = LTLINK_CAN_RX_PIN | LTLINK_CAN_TX_PIN;
+        gpio.Pin = RB_CAN_PINS;
         gpio.Mode = GPIO_MODE_AF_PP; gpio.Pull = GPIO_NOPULL;
         gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH; gpio.Alternate = GPIO_AF9_CAN1;
         HAL_GPIO_Init(GPIOB, &gpio);
@@ -351,13 +328,13 @@ static uint16_t adc_read(uint32_t channel)
 static void power_off(void)
 {
     /* Remove the load-facing rail first, then its upstream boost supply. */
-    HAL_GPIO_WritePin(LTLINK_LDO_EN_PORT, LTLINK_LDO_EN_PIN, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(RB_LDO_EN_PORT, RB_LDO_EN_PIN, GPIO_PIN_RESET);
     HAL_Delay(1U);
-    HAL_GPIO_WritePin(LTLINK_BOOST_EN_PORT, LTLINK_BOOST_EN_PIN, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(RB_BOOST_EN_PORT, RB_BOOST_EN_PIN, GPIO_PIN_RESET);
     power_enabled = 0U;
 }
 
-uint8_t ltlink_platform_power(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *rlen)
+uint8_t rblink_platform_power(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *rlen)
 {
     GPIO_InitTypeDef gpio = {0};
     DAC_ChannelConfTypeDef dcfg = {0};
@@ -374,7 +351,7 @@ uint8_t ltlink_platform_power(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t
         dac_code = (uint16_t)p[2] | ((uint16_t)p[3] << 8U);
         if (dac_code > 4095U) return LT_BAD_LENGTH;
         __HAL_RCC_GPIOA_CLK_ENABLE(); __HAL_RCC_ADC1_CLK_ENABLE(); __HAL_RCC_DAC_CLK_ENABLE();
-        gpio.Pin = LTLINK_ADC_VREF_PIN | LTLINK_ADC_VOUT_PIN | LTLINK_ADC_NTC_PIN | LTLINK_DAC_VOUT_PIN;
+        gpio.Pin = RB_ADC_VREF_PIN | RB_ADC_VOUT_PIN | RB_ADC_NTC_PIN | RB_DAC_VOUT_PIN;
         gpio.Mode = GPIO_MODE_ANALOG; gpio.Pull = GPIO_NOPULL; HAL_GPIO_Init(GPIOA, &gpio);
         hadc1.Instance = ADC1; hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
         hadc1.Init.Resolution = ADC_RESOLUTION_12B; hadc1.Init.ScanConvMode = DISABLE;
@@ -396,8 +373,8 @@ uint8_t ltlink_platform_power(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t
             return LT_IO_ERROR;
         }
         power_initialized = 1U;
-        if (p[1]) { HAL_GPIO_WritePin(LTLINK_BOOST_EN_PORT, LTLINK_BOOST_EN_PIN, GPIO_PIN_SET);
-                    HAL_Delay(5U); HAL_GPIO_WritePin(LTLINK_LDO_EN_PORT, LTLINK_LDO_EN_PIN, GPIO_PIN_SET);
+        if (p[1]) { HAL_GPIO_WritePin(RB_BOOST_EN_PORT, RB_BOOST_EN_PIN, GPIO_PIN_SET);
+                    HAL_Delay(5U); HAL_GPIO_WritePin(RB_LDO_EN_PORT, RB_LDO_EN_PIN, GPIO_PIN_SET);
                     power_enabled = 1U; }
         else { power_off(); }
         return LT_OK;

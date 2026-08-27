@@ -93,6 +93,12 @@ int main(void)
   MX_GPIO_Init();
   /* USER CODE BEGIN 2 */
   RB_Board_Init();
+
+  /* PC2 is the active-high system status LED.  Turn it on as soon as the
+     board GPIO is ready so a steady light confirms that firmware reached
+     the application.  PC1 remains reserved for communication activity. */
+  RB_LED_State(1U);
+
   RB_USB_Init();
   RB_Wireless_Init();
   RB_NOR_Init();

@@ -23,3 +23,4 @@ Key documents:
 - `docs/RBLINK_V3.0_PINMAP.md`
 - `docs/RBLINK_V3.0_CUBEMX.md`
 - `docs/RBLINK_V3_VENDOR_PROTOCOL.md`
+- `docs/RBLINK_V3_ROADMAP.md`

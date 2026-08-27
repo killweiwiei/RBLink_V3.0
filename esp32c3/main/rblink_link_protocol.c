@@ -19,6 +19,10 @@ uint32_t rblink_crc32(const void *data, size_t length)
 
 void rblink_frame_finalize(rblink_frame_t *frame)
 {
+    if (frame->payload_length <= RBLINK_PAYLOAD_SIZE) {
+        memset(&frame->payload[frame->payload_length], 0,
+               RBLINK_PAYLOAD_SIZE - frame->payload_length);
+    }
     frame->magic = RBLINK_FRAME_MAGIC;
     frame->version = RBLINK_PROTOCOL_VERSION;
     frame->reserved0 = 0U;
@@ -34,7 +38,12 @@ bool rblink_frame_is_valid(const rblink_frame_t *frame)
 
     if ((frame->magic != RBLINK_FRAME_MAGIC) ||
         (frame->version != RBLINK_PROTOCOL_VERSION) ||
-        (frame->payload_length > RBLINK_PAYLOAD_SIZE)) {
+        (frame->payload_length > RBLINK_PAYLOAD_SIZE) ||
+        (frame->reserved0 != 0U) || (frame->reserved1 != 0U) ||
+        ((frame->flags & ~(RBLINK_FLAG_RESPONSE | RBLINK_FLAG_MORE |
+                           RBLINK_FLAG_ERROR)) != 0U) ||
+        !((frame->channel <= RBLINK_CHANNEL_LOG) ||
+          (frame->channel == RBLINK_CHANNEL_IDLE))) {
         return false;
     }
 

@@ -8,12 +8,8 @@
 #include "driver/gpio.h"
 #include "driver/spi_slave.h"
 #include "esp_check.h"
-#include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "esp_mac.h"
-#include "esp_netif.h"
-#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -22,6 +18,7 @@
 #include "nvs_flash.h"
 
 #include "rblink_link_protocol.h"
+#include "rblink_provisioning.h"
 
 #define RBLINK_SPI_HOST       SPI2_HOST
 #define RBLINK_GPIO_SCLK      GPIO_NUM_4
@@ -34,12 +31,12 @@
 
 #define RBLINK_TCP_TASK_STACK 6144U
 #define RBLINK_SPI_TASK_STACK 4096U
-#define RBLINK_WIFI_CHANNEL   1U
-#define RBLINK_MAX_CLIENTS    1U
 
 static const char *TAG = "rblink";
 static QueueHandle_t s_net_to_stm32;
 static QueueHandle_t s_stm32_to_net;
+static bool rblink_make_local_control_response(const rblink_frame_t *request,
+                                               rblink_frame_t *response);
 
 /* READY is an electrical transaction-ready handshake, not a data-pending flag. */
 static void IRAM_ATTR rblink_spi_post_setup(spi_slave_transaction_t *transaction)
@@ -70,41 +67,6 @@ static void rblink_led_init(void)
     gpio_set_level(RBLINK_GPIO_LED_LINK, 0);
     gpio_set_level(RBLINK_GPIO_LED_DATA, 0);
     gpio_set_level(RBLINK_GPIO_READY, 0);
-}
-
-static void rblink_wifi_start(void)
-{
-    uint8_t mac[6];
-    char ssid[33];
-    wifi_init_config_t init_config = WIFI_INIT_CONFIG_DEFAULT();
-    wifi_config_t ap_config = {0};
-
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    if (esp_netif_create_default_wifi_ap() == NULL) {
-        ESP_LOGE(TAG, "failed to create default SoftAP network interface");
-        abort();
-    }
-
-    ESP_ERROR_CHECK(esp_wifi_init(&init_config));
-    ESP_ERROR_CHECK(esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP));
-    snprintf(ssid, sizeof(ssid), "%s-%02X%02X%02X",
-             CONFIG_RBLINK_AP_SSID_PREFIX, mac[3], mac[4], mac[5]);
-
-    strlcpy((char *)ap_config.ap.ssid, ssid, sizeof(ap_config.ap.ssid));
-    strlcpy((char *)ap_config.ap.password, CONFIG_RBLINK_AP_PASSWORD,
-            sizeof(ap_config.ap.password));
-    ap_config.ap.ssid_len = (uint8_t)strlen((char *)ap_config.ap.ssid);
-    ap_config.ap.channel = RBLINK_WIFI_CHANNEL;
-    ap_config.ap.max_connection = RBLINK_MAX_CLIENTS;
-    ap_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
-    ap_config.ap.pmf_cfg.required = true;
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_LOGI(TAG, "SoftAP %s started; TCP port %d", ssid,
-             CONFIG_RBLINK_TCP_PORT);
 }
 
 static void rblink_spi_init(void)
@@ -166,7 +128,16 @@ static void rblink_spi_task(void *argument)
         if ((completed->trans_len == (RBLINK_FRAME_SIZE * 8U)) &&
             rblink_frame_is_valid(rx_frame) &&
             (rx_frame->channel != RBLINK_CHANNEL_IDLE)) {
-            if (xQueueSend(s_stm32_to_net, rx_frame, 0) != pdTRUE) {
+            rblink_frame_t local_response;
+            QueueHandle_t destination = s_stm32_to_net;
+            const rblink_frame_t *queued_frame = rx_frame;
+            if (rblink_make_local_control_response(rx_frame, &local_response)) {
+                /* STM32-originated control commands terminate on ESP and the
+                 * response travels back in the next SPI transaction. */
+                destination = s_net_to_stm32;
+                queued_frame = &local_response;
+            }
+            if (xQueueSend(destination, queued_frame, 0) != pdTRUE) {
                 ESP_LOGW(TAG, "network TX queue full; dropping sequence %" PRIu32,
                          rx_frame->sequence);
             }
@@ -214,38 +185,42 @@ static bool rblink_send_frame(int socket_fd, const rblink_frame_t *frame)
     return true;
 }
 
-static bool rblink_handle_local_control(const rblink_frame_t *request)
+static bool rblink_make_local_control_response(const rblink_frame_t *request,
+                                               rblink_frame_t *response)
 {
-    rblink_frame_t response = {0};
-
     if ((request->channel != RBLINK_CHANNEL_CONTROL) ||
         ((request->flags & RBLINK_FLAG_RESPONSE) != 0U) ||
         (request->payload_length == 0U)) {
         return false;
     }
 
-    response.channel = RBLINK_CHANNEL_CONTROL;
-    response.flags = RBLINK_FLAG_RESPONSE;
-    response.sequence = request->sequence;
+    memset(response, 0, sizeof(*response));
+    response->channel = RBLINK_CHANNEL_CONTROL;
+    response->flags = RBLINK_FLAG_RESPONSE;
+    response->sequence = request->sequence;
     if (request->payload[0] == RBLINK_CONTROL_PING) {
-        response.payload_length = request->payload_length;
-        memcpy(response.payload, request->payload, request->payload_length);
+        response->payload_length = request->payload_length;
+        memcpy(response->payload, request->payload, request->payload_length);
     } else if (request->payload[0] == RBLINK_CONTROL_GET_INFO) {
         static const uint8_t info[] = {
             RBLINK_CONTROL_GET_INFO, 0U, RBLINK_PROTOCOL_VERSION,
             0U, 1U, 0U, /* ESP firmware 0.1.0 */
-            0x07U, 0U,  /* bit0 SoftAP, bit1 SPI, bit2 TCP */
+            0x3FU, 0U,  /* AP, SPI, TCP, STA, STM32 provision, AP web */
         };
-        response.payload_length = sizeof(info);
-        memcpy(response.payload, info, sizeof(info));
+        response->payload_length = sizeof(info);
+        memcpy(response->payload, info, sizeof(info));
     } else {
-        return false;
+        uint16_t response_length = 0U;
+        if (!rblink_provisioning_command(request->payload,
+                                         request->payload_length,
+                                         response->payload,
+                                         &response_length)) {
+            return false;
+        }
+        /* Assign through an aligned local because frame headers are packed. */
+        response->payload_length = response_length;
     }
-
-    rblink_frame_finalize(&response);
-    if (xQueueSend(s_stm32_to_net, &response, 0) != pdTRUE) {
-        ESP_LOGW(TAG, "control response queue full");
-    }
+    rblink_frame_finalize(response);
     return true;
 }
 
@@ -288,16 +263,22 @@ static void rblink_tcp_task(void *argument)
             if (new_client >= 0) {
                 const struct timeval send_timeout = {.tv_sec = 2, .tv_usec = 0};
                 if (client_fd >= 0) {
-                    close(client_fd);
+                    /* Keep the active debugging session stable. A second PC
+                     * must retry after the current owner disconnects. */
+                    close(new_client);
+                    ESP_LOGW(TAG, "rejected second TCP client");
+                    new_client = -1;
                 }
-                setsockopt(new_client, SOL_SOCKET, SO_SNDTIMEO, &send_timeout,
-                           sizeof(send_timeout));
-                xQueueReset(s_net_to_stm32);
-                xQueueReset(s_stm32_to_net);
-                client_fd = new_client;
-                received = 0U;
-                gpio_set_level(RBLINK_GPIO_LED_LINK, 1);
-                ESP_LOGI(TAG, "TCP client connected");
+                if (new_client >= 0) {
+                    setsockopt(new_client, SOL_SOCKET, SO_SNDTIMEO, &send_timeout,
+                               sizeof(send_timeout));
+                    xQueueReset(s_net_to_stm32);
+                    xQueueReset(s_stm32_to_net);
+                    client_fd = new_client;
+                    received = 0U;
+                    gpio_set_level(RBLINK_GPIO_LED_LINK, 1);
+                    ESP_LOGI(TAG, "TCP client connected");
+                }
             }
         }
 
@@ -316,8 +297,19 @@ static void rblink_tcp_task(void *argument)
                     if (!rblink_frame_is_valid(&rx_frame) ||
                         (rx_frame.channel == RBLINK_CHANNEL_IDLE)) {
                         ESP_LOGW(TAG, "discarding invalid TCP frame");
-                    } else if (rblink_handle_local_control(&rx_frame)) {
-                        /* Control health checks terminate on the ESP itself. */
+                    } else if (rx_frame.channel == RBLINK_CHANNEL_CONTROL) {
+                        /* Network clients may run health checks, but Wi-Fi
+                         * credentials are accepted only from STM32 over SPI. */
+                        if (((rx_frame.payload[0] == RBLINK_CONTROL_PING) ||
+                             (rx_frame.payload[0] == RBLINK_CONTROL_GET_INFO)) &&
+                            rblink_make_local_control_response(&rx_frame,
+                                                               &tx_frame)) {
+                            if (xQueueSend(s_stm32_to_net, &tx_frame, 0) != pdTRUE) {
+                                ESP_LOGW(TAG, "control response queue full");
+                            }
+                        } else {
+                            ESP_LOGW(TAG, "rejected privileged TCP control command");
+                        }
                     } else if (xQueueSend(s_net_to_stm32, &rx_frame, 0) != pdTRUE) {
                         ESP_LOGW(TAG, "SPI TX queue full; dropping TCP frame");
                     }
@@ -366,7 +358,7 @@ void app_main(void)
         abort();
     }
 
-    rblink_wifi_start();
+    rblink_provisioning_init();
     rblink_spi_init();
     task_result = xTaskCreate(rblink_spi_task, "rblink_spi",
                               RBLINK_SPI_TASK_STACK, NULL, 10, NULL);

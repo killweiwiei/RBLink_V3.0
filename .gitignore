@@ -7,6 +7,9 @@ Desktop.ini
 
 # Keil MDK generated/user-local files
 RBLink_DAP_V3.0/MDK-ARM/DebugConfig/
+RBLink_DAP_V3.0/MDK-ARM/RBLink_DAP_V3.0/
+RBLink_DAP_V3.0/MDK-ARM/build.log
+RBLink_DAP_V3.0/MDK-ARM/*.lst
 RBLink_DAP_V3.0/MDK-ARM/*.uvguix.*
 RBLink_DAP_V3.0/MDK-ARM/*.scvd
 
