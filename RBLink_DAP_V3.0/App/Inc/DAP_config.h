@@ -90,7 +90,8 @@ __STATIC_INLINE void LED_RUNNING_OUT(uint32_t bit) { RB_LED_Data((uint8_t)bit); 
 __STATIC_INLINE uint32_t TIMESTAMP_GET(void) { return DWT->CYCCNT / 168U; }
 __STATIC_INLINE void DAP_SETUP(void)
 {
-  RB_Board_Init();
+  /* Board GPIO ownership is established once by main(). Reinitializing it
+     here would generate a second ESP CHIP_EN reset pulse during USB startup. */
   CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
   DWT->CYCCNT = 0U;
   DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;

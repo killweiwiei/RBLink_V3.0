@@ -27,6 +27,7 @@
 #include "rblink_usb.h"
 #include "rblink_wireless.h"
 #include "rblink_nor.h"
+#include "rblink_bus.h"
 
 /* USER CODE END Includes */
 
@@ -93,15 +94,16 @@ int main(void)
   MX_GPIO_Init();
   /* USER CODE BEGIN 2 */
   RB_Board_Init();
-
-  /* PC2 is the active-high system status LED.  Turn it on as soon as the
-     board GPIO is ready so a steady light confirms that firmware reached
-     the application.  PC1 remains reserved for communication activity. */
-  RB_LED_State(1U);
-
   RB_USB_Init();
+  /* Restore target power only after the board safe state and DAP setup. */
+  RB_Power_Init();
   RB_Wireless_Init();
   RB_NOR_Init();
+
+  /* DAP initialization performs its board setup again and restores the LEDs
+     to their safe inactive state.  Assert the active-high status LED only
+     after every subsystem has finished initialization. */
+  RB_LED_State(1U);
 
   /* USER CODE END 2 */
 
@@ -114,6 +116,7 @@ int main(void)
     /* USER CODE BEGIN 3 */
     RB_USB_Task();
     RB_Wireless_Task();
+    RB_Bus_Task();
   }
   /* USER CODE END 3 */
 }

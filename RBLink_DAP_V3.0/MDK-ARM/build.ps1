@@ -13,6 +13,9 @@ if (-not (Test-Path -LiteralPath $Keil)) {
 
 Push-Location $projectDir
 try {
+  # UV4 may return before the build worker finishes.  Remove the previous log
+  # so the polling loop cannot mistake a stale successful build for this one.
+  Remove-Item -LiteralPath $logFile -Force -ErrorAction SilentlyContinue
   & $Keil -b $projectFile -j0 -o $logFile
   $deadline = (Get-Date).AddMinutes(3)
   do {

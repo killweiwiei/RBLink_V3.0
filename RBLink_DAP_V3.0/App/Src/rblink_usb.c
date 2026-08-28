@@ -13,6 +13,7 @@
 #define RB_CDC_IN_EP        0x83U
 #define RB_USB_MPS          64U
 #define RB_MS_VENDOR_CODE   0x20U
+#define RB_ACTIVITY_HOLD_MS 60U
 
 static USBD_HandleTypeDef usb_device;
 static uint8_t dap_rx[RB_USB_MPS] __attribute__((aligned(4)));
@@ -25,6 +26,16 @@ static volatile uint8_t cdc_tx_busy;
 static uint8_t cdc_control_pending;
 static uint8_t interface_alt;
 static uint8_t cdc_line[7] = {0x00U, 0xC2U, 0x01U, 0x00U, 0U, 0U, 8U};
+static volatile uint32_t activity_off_tick;
+
+/* Keep short USB transfers visible without blocking the protocol task.  Each
+   new transfer extends the deadline, so sustained traffic produces a steady
+   light and sparse traffic produces clearly visible flashes. */
+static void activity_kick(void)
+{
+  RB_LED_Data(1U);
+  activity_off_tick = HAL_GetTick() + RB_ACTIVITY_HOLD_MS;
+}
 
 static uint8_t class_init(USBD_HandleTypeDef *pdev, uint8_t cfgidx);
 static uint8_t class_deinit(USBD_HandleTypeDef *pdev, uint8_t cfgidx);
@@ -63,13 +74,25 @@ __ALIGN_BEGIN static uint8_t qualifier_desc[] __ALIGN_END = {
   0x0A, USB_DESC_TYPE_DEVICE_QUALIFIER, 0x00, 0x02, 0xEF, 0x02, 0x01, 0x40, 0x01, 0x00
 };
 
-/* Microsoft OS 2.0: bind interface 0 to WinUSB without a custom INF. */
+/* Microsoft OS 2.0: bind interface 0 to WinUSB and publish the stable device
+   interface GUID used by RBLink.Host.  Compatible-ID alone installs WinUSB,
+   but it does not create the GUID interface path that SetupAPI enumerates. */
 __ALIGN_BEGIN static uint8_t ms_os_20_desc[] __ALIGN_END = {
-  0x0A,0x00, 0x00,0x00, 0x00,0x00,0x03,0x06, 0x2E,0x00,
-  0x08,0x00, 0x01,0x00, 0x00,0x00, 0x24,0x00,
-  0x08,0x00, 0x02,0x00, 0x00,0x00, 0x1C,0x00,
+  0x0A,0x00, 0x00,0x00, 0x00,0x00,0x03,0x06, 0xB2,0x00,
+  0x08,0x00, 0x01,0x00, 0x00,0x00, 0xA8,0x00,
+  0x08,0x00, 0x02,0x00, 0x00,0x00, 0xA0,0x00,
   0x14,0x00, 0x03,0x00, 'W','I','N','U','S','B',0x00,0x00,
-  0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+  0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+  /* REG_MULTI_SZ DeviceInterfaceGUIDs =
+     {CDB3B5AD-293B-4663-AA36-01AAE4646376} */
+  0x84,0x00, 0x04,0x00, 0x07,0x00, 0x2A,0x00,
+  'D',0,'e',0,'v',0,'i',0,'c',0,'e',0,'I',0,'n',0,'t',0,'e',0,
+  'r',0,'f',0,'a',0,'c',0,'e',0,'G',0,'U',0,'I',0,'D',0,'s',0,0,0,
+  0x50,0,
+  '{',0,'C',0,'D',0,'B',0,'3',0,'B',0,'5',0,'A',0,'D',0,'-',0,
+  '2',0,'9',0,'3',0,'B',0,'-',0,'4',0,'6',0,'6',0,'3',0,'-',0,
+  'A',0,'A',0,'3',0,'6',0,'-',0,'0',0,'1',0,'A',0,'A',0,'E',0,
+  '4',0,'6',0,'4',0,'6',0,'3',0,'7',0,'6',0,'}',0,0,0,0,0
 };
 
 __ALIGN_BEGIN static uint8_t bos_desc[] __ALIGN_END = {
@@ -77,7 +100,7 @@ __ALIGN_BEGIN static uint8_t bos_desc[] __ALIGN_END = {
   0x1C, 0x10, 0x05, 0x00,
   0xDF,0x60,0xDD,0xD8, 0x89,0x45, 0xC7,0x4C,
   0x9C,0xD2,0x65,0x9D,0x9E,0x64,0x8A,0x9F,
-  0x00,0x00,0x03,0x06, 0x2E,0x00, RB_MS_VENDOR_CODE, 0x00
+  0x00,0x00,0x03,0x06, 0xB2,0x00, RB_MS_VENDOR_CODE, 0x00
 };
 
 static uint8_t class_init(USBD_HandleTypeDef *pdev, uint8_t cfgidx)
@@ -92,6 +115,7 @@ static uint8_t class_init(USBD_HandleTypeDef *pdev, uint8_t cfgidx)
   pdev->ep_in[2].is_used = 1U;
   pdev->ep_in[3].is_used = 1U; pdev->ep_out[3].is_used = 1U;
   dap_pending = dap_tx_busy = cdc_tx_busy = 0U;
+  activity_off_tick = 0U;
   (void)USBD_LL_PrepareReceive(pdev, RB_DAP_OUT_EP, dap_rx, sizeof(dap_rx));
   (void)USBD_LL_PrepareReceive(pdev, RB_CDC_OUT_EP, cdc_rx, sizeof(cdc_rx));
   return USBD_OK;
@@ -173,10 +197,13 @@ static uint8_t class_data_out(USBD_HandleTypeDef *pdev, uint8_t epnum)
 {
   uint32_t count = USBD_LL_GetRxDataSize(pdev, epnum);
   if (epnum == (RB_DAP_OUT_EP & 0x7FU)) {
-    if (count != 0U) dap_pending = 1U;
+    if (count != 0U) {
+      dap_pending = 1U;
+      activity_kick();
+    }
   } else if (epnum == (RB_CDC_OUT_EP & 0x7FU)) {
     (void)RB_UART_Write(cdc_rx, (uint16_t)count);
-    RB_LED_Data(1U);
+    if (count != 0U) activity_kick();
     (void)USBD_LL_PrepareReceive(pdev, RB_CDC_OUT_EP, cdc_rx, sizeof(cdc_rx));
   }
   return USBD_OK;
@@ -200,18 +227,25 @@ void RB_USB_Task(void)
   if (!cdc_tx_busy && (usb_device.dev_state == USBD_STATE_CONFIGURED)) {
     uint16_t count = RB_UART_Read(cdc_tx, sizeof(cdc_tx));
     if (count != 0U) {
+      activity_kick();
       cdc_tx_busy = 1U;
       if (USBD_LL_Transmit(&usb_device, RB_CDC_IN_EP, cdc_tx, count) != USBD_OK) cdc_tx_busy = 0U;
-    } else {
-      RB_LED_Data(0U);
     }
+  }
+
+  if ((activity_off_tick != 0U) &&
+      ((int32_t)(HAL_GetTick() - activity_off_tick) >= 0)) {
+    activity_off_tick = 0U;
+    RB_LED_Data(0U);
   }
 }
 
 /* ---------------- Device descriptors ---------------- */
 __ALIGN_BEGIN static uint8_t device_desc[] __ALIGN_END = {
   0x12, USB_DESC_TYPE_DEVICE, 0x10,0x02, 0xEF,0x02,0x01, 0x40,
-  0x51,0xC2, 0x01,0xF0, 0x00,0x03, 0x01,0x02,0x03,0x01
+  /* bcdDevice 3.01 forces Windows to refresh the corrected OS 2.0 descriptor
+     instead of reusing the cached 3.00 interface registration. */
+  0x51,0xC2, 0x01,0xF0, 0x01,0x03, 0x01,0x02,0x03,0x01
 };
 __ALIGN_BEGIN static uint8_t lang_desc[] __ALIGN_END = {0x04, USB_DESC_TYPE_STRING, 0x09,0x04};
 __ALIGN_BEGIN static uint8_t string_desc[128] __ALIGN_END;

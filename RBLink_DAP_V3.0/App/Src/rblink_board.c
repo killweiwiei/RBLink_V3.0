@@ -25,11 +25,17 @@ void RB_Board_Init(void)
      the interval before firmware starts. */
   output(RB_BOOST_EN_PORT, RB_BOOST_EN_PIN, GPIO_PIN_RESET);
   output(RB_LDO_EN_PORT, RB_LDO_EN_PIN, GPIO_PIN_RESET);
-  output(RB_JTAG_EN_PORT, RB_JTAG_EN_PIN, GPIO_PIN_RESET);
-  output(RB_UART_EN_PORT, RB_UART_EN_PIN, GPIO_PIN_RESET);
-  output(RB_SPI_EN_PORT, RB_SPI_EN_PIN, GPIO_PIN_RESET);
-  output(RB_I2C_EN_PORT, RB_I2C_EN_PIN, GPIO_PIN_RESET);
+
+  /* Enable every target-interface level translator once firmware owns the
+     GPIOs.  External pull-downs still keep all ports disabled during reset
+     and before this initialization executes. */
+  output(RB_JTAG_EN_PORT, RB_JTAG_EN_PIN, GPIO_PIN_SET);
+  output(RB_UART_EN_PORT, RB_UART_EN_PIN, GPIO_PIN_SET);
+  output(RB_SPI_EN_PORT, RB_SPI_EN_PIN, GPIO_PIN_SET);
+  output(RB_I2C_EN_PORT, RB_I2C_EN_PIN, GPIO_PIN_SET);
   output(RB_SWDIO_DIR_PORT, RB_SWDIO_DIR_PIN, GPIO_PIN_RESET);
+  /* ESP32-C3 CHIP_EN is active high.  Hold it low first so every STM32
+     power-on/reset also produces a deterministic ESP reset pulse. */
   output(RB_ESP_EN_PORT, RB_ESP_EN_PIN, GPIO_PIN_RESET);
 
   output(RB_NRESET_PORT, RB_NRESET_PIN, GPIO_PIN_RESET); /* NMOS off */
@@ -51,6 +57,11 @@ void RB_Board_Init(void)
   HAL_GPIO_Init(GPIOE, &io);
   io.Pin = RB_ESP_READY_PIN;
   HAL_GPIO_Init(GPIOB, &io);
+
+  /* 10 ms comfortably exceeds the ESP32-C3 CHIP_EN reset-low requirement.
+     Releasing it here lets the ESP boot while the STM32 initializes USB. */
+  HAL_Delay(10U);
+  HAL_GPIO_WritePin(RB_ESP_EN_PORT, RB_ESP_EN_PIN, GPIO_PIN_SET);
 }
 
 void RB_DAP_Enable(uint8_t enable)  { HAL_GPIO_WritePin(RB_JTAG_EN_PORT, RB_JTAG_EN_PIN, enable ? GPIO_PIN_SET : GPIO_PIN_RESET); }

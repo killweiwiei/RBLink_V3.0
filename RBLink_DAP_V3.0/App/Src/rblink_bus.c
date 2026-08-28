@@ -2,6 +2,7 @@
 #include <string.h>
 #include "stm32f4xx_hal.h"
 #include "rblink_board.h"
+#include "rblink_bus.h"
 
 #define LT_OK          0x00U
 #define LT_BAD_LENGTH  0x01U
@@ -16,6 +17,74 @@ static ADC_HandleTypeDef hadc1;
 static DAC_HandleTypeDef hdac;
 static uint8_t power_initialized;
 static uint8_t power_enabled;
+static uint16_t power_dac_code;
+static uint8_t power_save_pending;
+static uint32_t power_save_tick;
+
+/* Sector 11 is reserved for persistent settings by the Keil IROM limit.
+   Records are appended and the sector is erased only after all slots are
+   consumed, avoiding one sector erase for every voltage-slider movement. */
+#define RB_CONFIG_ADDRESS       0x080E0000UL
+#define RB_CONFIG_END           0x08100000UL
+#define RB_CONFIG_MAGIC         0x52425057UL /* "RBPW" */
+#define RB_POWER_DEFAULT_DAC    2703U        /* 3.3 / 5.0 * 4095 */
+#define RB_POWER_SAVE_DELAY_MS  1500U
+
+typedef struct {
+    uint32_t magic;
+    uint32_t sequence;
+    uint32_t data;
+    uint32_t data_inverse;
+} rb_power_record_t;
+
+static uint8_t power_record_valid(const rb_power_record_t *record)
+{
+    uint16_t dac = (uint16_t)((record->data >> 1U) & 0x0FFFU);
+    return (record->magic == RB_CONFIG_MAGIC) &&
+           (record->data_inverse == ~record->data) && (dac <= 4095U);
+}
+
+static const rb_power_record_t *power_find_latest(uint32_t *next_address)
+{
+    const rb_power_record_t *latest = 0;
+    uint32_t address;
+    for (address = RB_CONFIG_ADDRESS;
+         address + sizeof(rb_power_record_t) <= RB_CONFIG_END;
+         address += sizeof(rb_power_record_t)) {
+        const rb_power_record_t *record = (const rb_power_record_t *)address;
+        if (record->magic == 0xFFFFFFFFUL) break;
+        if (power_record_valid(record) &&
+            ((latest == 0) || ((int32_t)(record->sequence - latest->sequence) > 0))) latest = record;
+    }
+    *next_address = address;
+    return latest;
+}
+
+static uint8_t power_save(void)
+{
+    const rb_power_record_t *latest;
+    FLASH_EraseInitTypeDef erase = {0};
+    uint32_t error = 0U, address, sequence = 1U;
+    uint32_t data = ((uint32_t)power_dac_code << 1U) | (power_enabled ? 1U : 0U);
+    latest = power_find_latest(&address);
+    if (latest != 0) sequence = latest->sequence + 1U;
+    if (address + sizeof(rb_power_record_t) > RB_CONFIG_END) {
+        erase.TypeErase = FLASH_TYPEERASE_SECTORS; erase.Sector = FLASH_SECTOR_11;
+        erase.NbSectors = 1U; erase.VoltageRange = FLASH_VOLTAGE_RANGE_3;
+        HAL_FLASH_Unlock();
+        if (HAL_FLASHEx_Erase(&erase, &error) != HAL_OK) { HAL_FLASH_Lock(); return 0U; }
+        HAL_FLASH_Lock(); address = RB_CONFIG_ADDRESS;
+    }
+    HAL_FLASH_Unlock();
+    /* Commit magic last, so loss of power can only leave an ignored record. */
+    if ((HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, address + 4U, sequence) != HAL_OK) ||
+        (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, address + 8U, data) != HAL_OK) ||
+        (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, address + 12U, ~data) != HAL_OK) ||
+        (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, address, RB_CONFIG_MAGIC) != HAL_OK)) {
+        HAL_FLASH_Lock(); return 0U;
+    }
+    HAL_FLASH_Lock(); return 1U;
+}
 
 static uint32_t get_u32(const uint8_t *p)
 {
@@ -334,10 +403,63 @@ static void power_off(void)
     power_enabled = 0U;
 }
 
-uint8_t rblink_platform_power(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *rlen)
+static uint8_t power_apply(uint8_t enable, uint16_t dac_code)
 {
     GPIO_InitTypeDef gpio = {0};
     DAC_ChannelConfTypeDef dcfg = {0};
+    __HAL_RCC_GPIOA_CLK_ENABLE(); __HAL_RCC_ADC1_CLK_ENABLE(); __HAL_RCC_DAC_CLK_ENABLE();
+    gpio.Pin = RB_ADC_VREF_PIN | RB_ADC_VOUT_PIN | RB_ADC_NTC_PIN | RB_DAC_VOUT_PIN;
+    gpio.Mode = GPIO_MODE_ANALOG; gpio.Pull = GPIO_NOPULL; HAL_GPIO_Init(GPIOA, &gpio);
+    hadc1.Instance = ADC1; hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+    hadc1.Init.Resolution = ADC_RESOLUTION_12B; hadc1.Init.ScanConvMode = DISABLE;
+    hadc1.Init.ContinuousConvMode = DISABLE; hadc1.Init.DiscontinuousConvMode = DISABLE;
+    hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+    hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START; hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+    hadc1.Init.NbrOfConversion = 1U; hadc1.Init.DMAContinuousRequests = DISABLE;
+    hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+    hdac.Instance = DAC;
+    if ((HAL_ADC_Init(&hadc1) != HAL_OK) || (HAL_DAC_Init(&hdac) != HAL_OK)) return 0U;
+    dcfg.DAC_Trigger = DAC_TRIGGER_NONE; dcfg.DAC_OutputBuffer = DAC_OUTPUTBUFFER_ENABLE;
+    if ((HAL_DAC_ConfigChannel(&hdac, &dcfg, DAC_CHANNEL_1) != HAL_OK) ||
+        (HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, dac_code) != HAL_OK) ||
+        (HAL_DAC_Start(&hdac, DAC_CHANNEL_1) != HAL_OK)) return 0U;
+    power_initialized = 1U; power_dac_code = dac_code;
+    if (enable) {
+        HAL_GPIO_WritePin(RB_BOOST_EN_PORT, RB_BOOST_EN_PIN, GPIO_PIN_SET);
+        HAL_Delay(5U);
+        HAL_GPIO_WritePin(RB_LDO_EN_PORT, RB_LDO_EN_PIN, GPIO_PIN_SET);
+        power_enabled = 1U;
+    } else power_off();
+    return 1U;
+}
+
+void RB_Power_Init(void)
+{
+    uint32_t next_address;
+    const rb_power_record_t *record = power_find_latest(&next_address);
+    uint8_t enable = 1U;
+    uint16_t dac = RB_POWER_DEFAULT_DAC;
+    if (record != 0) {
+        enable = (uint8_t)(record->data & 1U);
+        dac = (uint16_t)((record->data >> 1U) & 0x0FFFU);
+    }
+    if (!power_apply(enable, dac)) power_off();
+    /* Store the factory default on the first boot so all later starts follow
+       the exact same validated restore path. */
+    if ((record == 0) && power_initialized) (void)power_save();
+}
+
+void RB_Bus_Task(void)
+{
+    if (power_save_pending &&
+        ((int32_t)(HAL_GetTick() - power_save_tick) >= 0)) {
+        if (power_save()) power_save_pending = 0U;
+        else power_save_tick = HAL_GetTick() + RB_POWER_SAVE_DELAY_MS;
+    }
+}
+
+uint8_t rblink_platform_power(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *rlen)
+{
     uint16_t dac_code;
     if (p[0] == 2U) {
         if (len != 1U) return LT_BAD_LENGTH;
@@ -350,33 +472,9 @@ uint8_t rblink_platform_power(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t
         if ((len != 4U) || (p[1] > 1U)) return LT_BAD_LENGTH;
         dac_code = (uint16_t)p[2] | ((uint16_t)p[3] << 8U);
         if (dac_code > 4095U) return LT_BAD_LENGTH;
-        __HAL_RCC_GPIOA_CLK_ENABLE(); __HAL_RCC_ADC1_CLK_ENABLE(); __HAL_RCC_DAC_CLK_ENABLE();
-        gpio.Pin = RB_ADC_VREF_PIN | RB_ADC_VOUT_PIN | RB_ADC_NTC_PIN | RB_DAC_VOUT_PIN;
-        gpio.Mode = GPIO_MODE_ANALOG; gpio.Pull = GPIO_NOPULL; HAL_GPIO_Init(GPIOA, &gpio);
-        hadc1.Instance = ADC1; hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
-        hadc1.Init.Resolution = ADC_RESOLUTION_12B; hadc1.Init.ScanConvMode = DISABLE;
-        hadc1.Init.ContinuousConvMode = DISABLE; hadc1.Init.DiscontinuousConvMode = DISABLE;
-        hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
-        hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START; hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-        hadc1.Init.NbrOfConversion = 1U; hadc1.Init.DMAContinuousRequests = DISABLE;
-        hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
-        hdac.Instance = DAC;
-        if ((HAL_ADC_Init(&hadc1) != HAL_OK) || (HAL_DAC_Init(&hdac) != HAL_OK)) {
-            power_off();
-            return LT_IO_ERROR;
-        }
-        dcfg.DAC_Trigger = DAC_TRIGGER_NONE; dcfg.DAC_OutputBuffer = DAC_OUTPUTBUFFER_ENABLE;
-        if ((HAL_DAC_ConfigChannel(&hdac, &dcfg, DAC_CHANNEL_1) != HAL_OK) ||
-            (HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, dac_code) != HAL_OK) ||
-            (HAL_DAC_Start(&hdac, DAC_CHANNEL_1) != HAL_OK)) {
-            power_off();
-            return LT_IO_ERROR;
-        }
-        power_initialized = 1U;
-        if (p[1]) { HAL_GPIO_WritePin(RB_BOOST_EN_PORT, RB_BOOST_EN_PIN, GPIO_PIN_SET);
-                    HAL_Delay(5U); HAL_GPIO_WritePin(RB_LDO_EN_PORT, RB_LDO_EN_PIN, GPIO_PIN_SET);
-                    power_enabled = 1U; }
-        else { power_off(); }
+        if (!power_apply(p[1], dac_code)) { power_off(); return LT_IO_ERROR; }
+        power_save_pending = 1U;
+        power_save_tick = HAL_GetTick() + RB_POWER_SAVE_DELAY_MS;
         return LT_OK;
     }
     if (len != 1U) return LT_BAD_LENGTH;
@@ -389,6 +487,7 @@ uint8_t rblink_platform_power(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t
     if ((r[1] == 0xFFU && r[2] == 0xFFU) ||
         (r[3] == 0xFFU && r[4] == 0xFFU) ||
         (r[5] == 0xFFU && r[6] == 0xFFU)) return LT_IO_ERROR;
-    *rlen = 7U;
+    put_u16(&r[7], power_dac_code);
+    *rlen = 9U;
     return LT_OK;
 }

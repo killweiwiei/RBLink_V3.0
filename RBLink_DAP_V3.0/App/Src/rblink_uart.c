@@ -44,7 +44,11 @@ void RB_UART_Init(void)
   apply_line_coding(115200U, 0U, 0U, 8U);
   HAL_NVIC_SetPriority(USART1_IRQn, 6U, 0U);
   HAL_NVIC_EnableIRQ(USART1_IRQn);
-  RB_UART_Enable(0U);
+  /* The target-side translator is active-high.  Keep it enabled by default:
+     Web Serial and some terminal programs do not assert DTR when opening CDC,
+     and tying PORTEN to DTR made USART1 transmit internally with no waveform
+     reaching PA9/the connector. */
+  RB_UART_Enable(1U);
 }
 
 void RB_UART_SetLineCoding(uint32_t baud, uint8_t stop, uint8_t parity, uint8_t bits)
@@ -55,7 +59,8 @@ void RB_UART_SetLineCoding(uint32_t baud, uint8_t stop, uint8_t parity, uint8_t 
 void RB_UART_SetControlLines(uint16_t state)
 {
   dtr_active = (state & 1U) != 0U;
-  RB_UART_Enable(dtr_active);
+  (void)dtr_active;
+  RB_UART_Enable(1U);
 }
 
 uint16_t RB_UART_Write(const uint8_t *data, uint16_t length)

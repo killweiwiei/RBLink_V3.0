@@ -133,14 +133,20 @@ uint8_t RB_Wireless_Control(const uint8_t *request, uint16_t request_length,
       (request_length == 0U) || (request_length > PAYLOAD_SIZE)) return 0U;
   sequence = control_sequence++;
   deadline = HAL_GetTick() + 500U;
-  response_pending = 0U;
 
   while ((int32_t)(deadline - HAL_GetTick()) > 0) {
+    uint8_t sending_pending;
     if (HAL_GPIO_ReadPin(RB_ESP_READY_PORT, RB_ESP_READY_PIN) == GPIO_PIN_RESET) {
       HAL_Delay(1U);
       continue;
     }
-    if (!request_sent) {
+    /* A TCP request may arrive in the same full-duplex SPI transaction as a
+     * locally initiated control exchange.  Never overwrite its pending reply:
+     * send that reply first, then continue the control request/response cycle. */
+    sending_pending = response_pending;
+    if (sending_pending) {
+      /* process_frame() has already prepared tx_frame. */
+    } else if (!request_sent) {
       memset(&tx_frame, 0, sizeof(tx_frame));
       tx_frame.channel = CH_CONTROL;
       tx_frame.sequence = sequence;
@@ -156,6 +162,7 @@ uint8_t RB_Wireless_Control(const uint8_t *request, uint16_t request_length,
     if (HAL_SPI_TransmitReceive(&hspi1, (uint8_t *)&tx_frame,
                                 (uint8_t *)&rx_frame, FRAME_SIZE, 20U) == HAL_OK) {
       HAL_GPIO_WritePin(RB_ESP_NSS_PORT, RB_ESP_NSS_PIN, GPIO_PIN_SET);
+      if (sending_pending) response_pending = 0U;
       if (valid(&rx_frame) && (rx_frame.channel == CH_CONTROL) &&
           ((rx_frame.flags & FLAG_RESPONSE) != 0U) &&
           (rx_frame.sequence == sequence)) {
@@ -164,6 +171,9 @@ uint8_t RB_Wireless_Control(const uint8_t *request, uint16_t request_length,
         make_idle();
         return 1U;
       }
+      /* Service a simultaneous TCP-originated DAP/vendor/UART request instead
+       * of discarding it while waiting for our local control response. */
+      process_frame();
     } else {
       HAL_GPIO_WritePin(RB_ESP_NSS_PORT, RB_ESP_NSS_PIN, GPIO_PIN_SET);
     }
