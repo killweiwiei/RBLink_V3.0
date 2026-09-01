@@ -26,8 +26,8 @@ static uint32_t power_save_tick;
    consumed, avoiding one sector erase for every voltage-slider movement. */
 #define RB_CONFIG_ADDRESS       0x080E0000UL
 #define RB_CONFIG_END           0x08100000UL
-#define RB_CONFIG_MAGIC         0x52425057UL /* "RBPW" */
-#define RB_POWER_DEFAULT_DAC    2703U        /* 3.3 / 5.0 * 4095 */
+#define RB_CONFIG_MAGIC         0x32504252UL /* "RBP2": invalidates the old uncalibrated DAC mapping. */
+#define RB_POWER_DEFAULT_DAC    1547U        /* Inverted FB injection: (5.0-3.3)/(5.0-0.5)*4095 */
 #define RB_POWER_SAVE_DELAY_MS  1500U
 
 typedef struct {
@@ -48,15 +48,24 @@ static const rb_power_record_t *power_find_latest(uint32_t *next_address)
 {
     const rb_power_record_t *latest = 0;
     uint32_t address;
+    *next_address = RB_CONFIG_END;
     for (address = RB_CONFIG_ADDRESS;
          address + sizeof(rb_power_record_t) <= RB_CONFIG_END;
          address += sizeof(rb_power_record_t)) {
         const rb_power_record_t *record = (const rb_power_record_t *)address;
-        if (record->magic == 0xFFFFFFFFUL) break;
+        /* Magic is committed last. A reset during programming can therefore
+           leave magic erased while the remaining words are not erased. Skip
+           that poisoned slot instead of trying to program over zero bits. */
+        if ((record->magic == 0xFFFFFFFFUL) &&
+            (record->sequence == 0xFFFFFFFFUL) &&
+            (record->data == 0xFFFFFFFFUL) &&
+            (record->data_inverse == 0xFFFFFFFFUL)) {
+            *next_address = address;
+            break;
+        }
         if (power_record_valid(record) &&
             ((latest == 0) || ((int32_t)(record->sequence - latest->sequence) > 0))) latest = record;
     }
-    *next_address = address;
     return latest;
 }
 

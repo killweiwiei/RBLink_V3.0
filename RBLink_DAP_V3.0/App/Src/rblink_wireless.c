@@ -16,6 +16,7 @@
 #define CH_IDLE          0xFFU
 #define FLAG_RESPONSE    0x01U
 #define FLAG_ERROR       0x04U
+#define READY_RELEASE_SPINS 100000U
 
 typedef __packed struct {
   uint32_t magic;
@@ -38,6 +39,23 @@ static uint8_t wifi_staging[95];
 static uint8_t wifi_ssid_length;
 static uint8_t wifi_password_length;
 static uint8_t wifi_staged_length;
+static uint8_t wireless_initialized;
+
+/* READY is raised by the ESP slave after a transaction descriptor has been
+ * armed and lowered from its post-transaction callback.  The STM32 can finish
+ * HAL_SPI_TransmitReceive() before that callback updates the GPIO, so sampling
+ * READY again immediately may see the stale high level and start clocks before
+ * the next ESP transaction is armed.  Observe the falling edge after every CS
+ * cycle; the loop normally exits within a few microseconds and does not reduce
+ * the configured 10.5 MHz clock. */
+static void wait_ready_released(void)
+{
+  uint32_t spins = READY_RELEASE_SPINS;
+  while (((RB_ESP_READY_PORT->IDR & RB_ESP_READY_PIN) != 0U) &&
+         (spins-- != 0U)) {
+    __NOP();
+  }
+}
 
 static uint32_t crc32(const void *memory, uint32_t length)
 {
@@ -123,14 +141,16 @@ static void process_frame(void)
 }
 
 uint8_t RB_Wireless_Control(const uint8_t *request, uint16_t request_length,
-                            uint8_t *response, uint16_t *response_length)
+                            uint8_t *response, uint16_t response_capacity,
+                            uint16_t *response_length)
 {
   uint32_t sequence;
   uint32_t deadline;
   uint8_t request_sent = 0U;
 
   if ((request == NULL) || (response == NULL) || (response_length == NULL) ||
-      (request_length == 0U) || (request_length > PAYLOAD_SIZE)) return 0U;
+      !wireless_initialized || (request_length == 0U) ||
+      (request_length > PAYLOAD_SIZE)) return 0U;
   sequence = control_sequence++;
   deadline = HAL_GetTick() + 500U;
 
@@ -162,10 +182,15 @@ uint8_t RB_Wireless_Control(const uint8_t *request, uint16_t request_length,
     if (HAL_SPI_TransmitReceive(&hspi1, (uint8_t *)&tx_frame,
                                 (uint8_t *)&rx_frame, FRAME_SIZE, 20U) == HAL_OK) {
       HAL_GPIO_WritePin(RB_ESP_NSS_PORT, RB_ESP_NSS_PIN, GPIO_PIN_SET);
+      wait_ready_released();
       if (sending_pending) response_pending = 0U;
       if (valid(&rx_frame) && (rx_frame.channel == CH_CONTROL) &&
           ((rx_frame.flags & FLAG_RESPONSE) != 0U) &&
           (rx_frame.sequence == sequence)) {
+        if (rx_frame.payload_length > response_capacity) {
+          make_idle();
+          return 0U;
+        }
         memcpy(response, rx_frame.payload, rx_frame.payload_length);
         *response_length = rx_frame.payload_length;
         make_idle();
@@ -176,6 +201,7 @@ uint8_t RB_Wireless_Control(const uint8_t *request, uint16_t request_length,
       process_frame();
     } else {
       HAL_GPIO_WritePin(RB_ESP_NSS_PORT, RB_ESP_NSS_PIN, GPIO_PIN_SET);
+      wait_ready_released();
     }
   }
   make_idle();
@@ -230,6 +256,7 @@ uint8_t rblink_platform_wifi(const uint8_t *p, uint8_t n,
                             (uint16_t)(3U + wifi_ssid_length +
                                        wifi_password_length) : 1U;
   if (!RB_Wireless_Control(request, request_length, esp_response,
+                           sizeof(esp_response),
                            &esp_response_len) || (esp_response_len < 2U) ||
       (esp_response[0] != request[0]) || (esp_response[1] != 0U)) return 3U;
   if (request[0] == 0x10U) {
@@ -269,13 +296,14 @@ void RB_Wireless_Init(void)
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
   hspi1.Init.CRCPolynomial = 7U;
-  (void)HAL_SPI_Init(&hspi1);
+  wireless_initialized = HAL_SPI_Init(&hspi1) == HAL_OK ? 1U : 0U;
   make_idle();
-  RB_ESP_EN_PORT->BSRR = RB_ESP_EN_PIN;
+  if (wireless_initialized) RB_ESP_EN_PORT->BSRR = RB_ESP_EN_PIN;
 }
 
 void RB_Wireless_Task(void)
 {
+  if (!wireless_initialized) return;
   if (HAL_GPIO_ReadPin(RB_ESP_READY_PORT, RB_ESP_READY_PIN) == GPIO_PIN_RESET) return;
   if (!response_pending) make_idle();
   memset(&rx_frame, 0, sizeof(rx_frame));
@@ -286,4 +314,5 @@ void RB_Wireless_Task(void)
     process_frame();
   }
   HAL_GPIO_WritePin(RB_ESP_NSS_PORT, RB_ESP_NSS_PIN, GPIO_PIN_SET);
+  wait_ready_released();
 }

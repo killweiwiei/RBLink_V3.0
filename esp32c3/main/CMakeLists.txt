@@ -4,7 +4,7 @@ idf_component_register(
         "rblink_link_protocol.c"
         "rblink_provisioning.c"
     INCLUDE_DIRS "."
-    EMBED_FILES "rb_logo.png"
+    EMBED_FILES "rb_logo.png" "index.html"
     REQUIRES
         esp_driver_gpio
         esp_driver_spi

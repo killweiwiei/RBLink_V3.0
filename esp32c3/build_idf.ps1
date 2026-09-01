@@ -4,9 +4,10 @@ param(
     [string]$Port = ""
 )
 
-$IdfRoot = "D:\Program Files (x86)\Espressif\.espressif\v5.5.5\esp-idf"
-$ToolsRoot = "D:\Program Files (x86)\Espressif\.espressif\v5.5.5\tools"
-$IdfPython = "$ToolsRoot\python_env\idf5.5_py3.12_env\Scripts\python.exe"
+$IdfRoot = "E:\Esp\.espressif\v5.5.5\esp-idf"
+$ToolsRoot = "E:\Esp\.espressif\v5.5.5\tools"
+$IdfPythonEnv = "$ToolsRoot\python_env\idf5.5_py3.12_env"
+$IdfPython = "$IdfPythonEnv\Scripts\python.exe"
 $IdfCommand = "$IdfRoot\tools\idf.py"
 $IdfRunner = Join-Path $PSScriptRoot "tools\idf_runner.py"
 $Ninja = "$ToolsRoot\ninja\1.12.1\ninja.exe"
@@ -26,8 +27,8 @@ if (-not (Test-Path -LiteralPath $CCompiler)) {
 
 $env:IDF_PATH = $IdfRoot
 $env:IDF_TOOLS_PATH = $ToolsRoot
-$env:IDF_PYTHON_ENV_PATH = "$ToolsRoot\python_env\idf5.5_py3.12_env"
-$env:PIP_CACHE_DIR = "D:\Program Files (x86)\Espressif\pip-cache"
+$env:IDF_PYTHON_ENV_PATH = $IdfPythonEnv
+$env:PIP_CACHE_DIR = "E:\Esp\.espressif\pip-cache"
 $env:ESP_ROM_ELF_DIR = "$ToolsRoot\esp-rom-elfs\20241011"
 $env:OPENOCD_SCRIPTS = "$ToolsRoot\openocd-esp32\v0.12.0-esp32-20260424\openocd-esp32\share\openocd\scripts"
 $env:CC = $CCompiler

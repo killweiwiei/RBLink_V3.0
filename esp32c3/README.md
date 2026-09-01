@@ -13,8 +13,8 @@ This ESP-IDF project implements the wireless side of RBlink V3.0. It targets
 | GPIO7 | input | PB6 | SPI1 CS, active low |
 | GPIO10 | output | PB7 | READY handshake |
 | EN | input | PE0 | Module enable |
-| GPIO0 | output | - | Network-link LED, active high |
-| GPIO1 | output | - | Data-activity LED, active high |
+| GPIO0 | output | - | Network-link LED, active high; 500 ms blink while waiting, steady when a TCP client is connected |
+| GPIO1 | output | - | SPI/TCP data-activity LED, active high; non-blocking 60 ms minimum pulse |
 | GPIO18/19 | bidirectional | USB connector | ESP native USB reserved |
 
 GPIO10 is high only while an SPI slave transaction is queued and safe for the
@@ -36,6 +36,11 @@ transaction and may transfer an IDLE frame when it only needs to poll.
 - Open `http://192.168.4.1` while connected to the RBLink AP for web
   provisioning. USB local provisioning goes through the STM32 CMSIS-DAP
   vendor command and SPI control channel; ESP native USB is not used for it.
+- The same page exposes `/ws/debug` as a binary WebSocket and includes a Web
+  SWD console. It identifies the STM32 bridge, connects a target Debug Port,
+  reads DP IDCODE and target memory, and halts/resumes a Cortex-M core. Web
+  debug and raw TCP port `3240` are mutually exclusive during transactions.
+  Flash erase/program is intentionally not exposed by the initial Web console.
 - Change the default Wi-Fi password in `menuconfig` before production release.
 
 The current implementation is a transparent transport. CMSIS-DAP execution,
@@ -44,8 +49,8 @@ share the same target-side implementation.
 
 ## Build
 
-The verified environment is ESP-IDF v5.5.5 with its Python 3.12 environment installed at
-`D:\Program Files (x86)\Espressif\.espressif`. This project includes a wrapper which sets
+The configured environment is ESP-IDF v5.5.5 with Python 3.12 installed at
+`E:\Esp\.espressif\v5.5.5`. This project includes a wrapper which sets
 all required paths, so no activated terminal is required:
 
 ```text
@@ -65,8 +70,12 @@ gcc -std=c11 -Wall -Wextra -Werror test/test_protocol.c \
 ./test_protocol
 ```
 
-After joining the `RBlink-xxxxxx` SoftAP, verify the ESP independently with:
+After joining the `RBlink-xxxxxx` SoftAP, verify both the ESP Wi-Fi service and
+the complete ESP-to-STM32 SPI bridge with:
 
 ```text
 python tools/rblink_wireless_probe.py
 ```
+
+To isolate the ESP Wi-Fi/TCP service without requiring an STM32 response, use
+`python tools/rblink_wireless_probe.py --esp-only`.

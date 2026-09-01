@@ -19,7 +19,26 @@
       "inheritDefault": "hidden"
     }
   },
-  "idf.customExtraVars": {},
-  "idf.currentSetup": "D:\\Program Files (x86)\\Espressif\\.espressif\\v5.5.5\\esp-idf",
-  "idf.monitorPort": "COM19"
+  "idf.customExtraVars": {
+    "IDF_TARGET": "esp32c3"
+  },
+  "idf.cmakeCompilerArgs": [
+    "-G",
+    "Ninja",
+    "-DPYTHON_DEPS_CHECKED=1",
+    "-DESP_PLATFORM=1",
+    "-DCMAKE_MAKE_PROGRAM=E:/Esp/.espressif/v5.5.5/tools/ninja/1.12.1/ninja.exe",
+    "-DCMAKE_C_COMPILER=E:/Esp/.espressif/v5.5.5/tools/riscv32-esp-elf/esp-14.2.0_20260121/riscv32-esp-elf/bin/riscv32-esp-elf-gcc.exe",
+    "-DCMAKE_CXX_COMPILER=E:/Esp/.espressif/v5.5.5/tools/riscv32-esp-elf/esp-14.2.0_20260121/riscv32-esp-elf/bin/riscv32-esp-elf-g++.exe",
+    "-DCMAKE_ASM_COMPILER=E:/Esp/.espressif/v5.5.5/tools/riscv32-esp-elf/esp-14.2.0_20260121/riscv32-esp-elf/bin/riscv32-esp-elf-gcc.exe"
+  ],
+  "idf.enableCCache": false,
+  "idf.currentSetup": "E:\\Esp\\.espressif\\v5.5.5\\esp-idf",
+  "idf.monitorPort": "COM25",
+  "idf.saveLastProjectConfiguration": true,
+  "idf.portWin": "COM25",
+  "idf.flashType": "JTAG",
+  "idf.openOcdConfigs": [
+    "board/esp32c3-builtin.cfg"
+  ]
 }

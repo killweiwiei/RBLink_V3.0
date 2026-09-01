@@ -25,6 +25,7 @@
 /* USER CODE BEGIN Includes */
 #include "rblink_board.h"
 #include "rblink_usb.h"
+#include "rblink_uart.h"
 #include "rblink_wireless.h"
 #include "rblink_nor.h"
 #include "rblink_bus.h"
@@ -115,6 +116,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     RB_USB_Task();
+    RB_UART_Task();
     RB_Wireless_Task();
     RB_Bus_Task();
   }
