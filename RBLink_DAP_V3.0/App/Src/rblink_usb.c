@@ -83,16 +83,17 @@ __ALIGN_BEGIN static uint8_t ms_os_20_desc[] __ALIGN_END = {
   0x08,0x00, 0x02,0x00, 0x00,0x00, 0xA0,0x00,
   0x14,0x00, 0x03,0x00, 'W','I','N','U','S','B',0x00,0x00,
   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-  /* REG_MULTI_SZ DeviceInterfaceGUIDs =
-     {CDB3B5AD-293B-4663-AA36-01AAE4646376} */
+  /* Arm standard CMSIS-DAP v2 WinUSB interface GUID. Debuggers such as
+     Keil enumerate this GUID, so it must not be replaced by a private one:
+     {CDB3B5AD-293B-4663-AA36-1AAE46463776} */
   0x84,0x00, 0x04,0x00, 0x07,0x00, 0x2A,0x00,
   'D',0,'e',0,'v',0,'i',0,'c',0,'e',0,'I',0,'n',0,'t',0,'e',0,
   'r',0,'f',0,'a',0,'c',0,'e',0,'G',0,'U',0,'I',0,'D',0,'s',0,0,0,
   0x50,0,
   '{',0,'C',0,'D',0,'B',0,'3',0,'B',0,'5',0,'A',0,'D',0,'-',0,
   '2',0,'9',0,'3',0,'B',0,'-',0,'4',0,'6',0,'6',0,'3',0,'-',0,
-  'A',0,'A',0,'3',0,'6',0,'-',0,'0',0,'1',0,'A',0,'A',0,'E',0,
-  '4',0,'6',0,'4',0,'6',0,'3',0,'7',0,'6',0,'}',0,0,0,0,0
+  'A',0,'A',0,'3',0,'6',0,'-',0,'1',0,'A',0,'A',0,'E',0,'4',0,
+  '6',0,'4',0,'6',0,'3',0,'7',0,'7',0,'6',0,'}',0,0,0,0,0
 };
 
 __ALIGN_BEGIN static uint8_t bos_desc[] __ALIGN_END = {
@@ -243,9 +244,9 @@ void RB_USB_Task(void)
 /* ---------------- Device descriptors ---------------- */
 __ALIGN_BEGIN static uint8_t device_desc[] __ALIGN_END = {
   0x12, USB_DESC_TYPE_DEVICE, 0x10,0x02, 0xEF,0x02,0x01, 0x40,
-  /* bcdDevice 3.01 forces Windows to refresh the corrected OS 2.0 descriptor
-     instead of reusing the cached 3.00 interface registration. */
-  0x51,0xC2, 0x01,0xF0, 0x01,0x03, 0x01,0x02,0x03,0x01
+  /* bcdDevice 3.02 forces Windows to refresh the standard CMSIS-DAP GUID
+     instead of reusing the cached 3.01 private interface registration. */
+  0x51,0xC2, 0x01,0xF0, 0x02,0x03, 0x01,0x02,0x03,0x01
 };
 __ALIGN_BEGIN static uint8_t lang_desc[] __ALIGN_END = {0x04, USB_DESC_TYPE_STRING, 0x09,0x04};
 __ALIGN_BEGIN static uint8_t string_desc[128] __ALIGN_END;
@@ -254,14 +255,14 @@ static uint8_t *dev_desc(USBD_SpeedTypeDef speed, uint16_t *len) { (void)speed; 
 static uint8_t *lang(USBD_SpeedTypeDef speed, uint16_t *len) { (void)speed; *len=sizeof(lang_desc); return lang_desc; }
 static uint8_t *make_string(const char *s, uint16_t *len) { USBD_GetString((uint8_t *)s, string_desc, len); return string_desc; }
 static uint8_t *manufacturer(USBD_SpeedTypeDef speed, uint16_t *len) { (void)speed; return make_string("RB Technology",len); }
-static uint8_t *product(USBD_SpeedTypeDef speed, uint16_t *len) { (void)speed; return make_string("RBLink V3.0",len); }
+static uint8_t *product(USBD_SpeedTypeDef speed, uint16_t *len) { (void)speed; return make_string("RBLink CMSIS-DAP V3.0",len); }
 static uint8_t *serial(USBD_SpeedTypeDef speed, uint16_t *len)
 {
   static char text[25]; static const char hex[]="0123456789ABCDEF"; uint32_t i; const uint8_t *uid=(const uint8_t *)UID_BASE;
   (void)speed; for(i=0U;i<12U;i++){text[2U*i]=hex[uid[i]>>4U];text[2U*i+1U]=hex[uid[i]&15U];} text[24]='\0'; return make_string(text,len);
 }
 static uint8_t *configuration(USBD_SpeedTypeDef speed, uint16_t *len) { (void)speed; return make_string("RBLink Composite",len); }
-static uint8_t *interface_name(USBD_SpeedTypeDef speed, uint16_t *len) { (void)speed; return make_string("RBLink CMSIS-DAP",len); }
+static uint8_t *interface_name(USBD_SpeedTypeDef speed, uint16_t *len) { (void)speed; return make_string("RBLink CMSIS-DAP v2",len); }
 static uint8_t *bos(USBD_SpeedTypeDef speed, uint16_t *len) { (void)speed; *len=sizeof(bos_desc); return bos_desc; }
 
 static USBD_DescriptorsTypeDef descriptors = {

@@ -53,18 +53,44 @@ __STATIC_INLINE uint8_t DAP_GetTargetDeviceVendorString(char *str) { (void)str; 
 __STATIC_INLINE uint8_t DAP_GetTargetDeviceNameString(char *str) { (void)str; return 0U; }
 __STATIC_INLINE uint8_t DAP_GetTargetBoardVendorString(char *str) { (void)str; return 0U; }
 __STATIC_INLINE uint8_t DAP_GetTargetBoardNameString(char *str) { (void)str; return 0U; }
-__STATIC_INLINE uint8_t DAP_GetProductFirmwareVersionString(char *str) { return rb_copy_string(str, "3.0.0"); }
+__STATIC_INLINE uint8_t DAP_GetProductFirmwareVersionString(char *str) { return rb_copy_string(str, "V3.0.05"); }
 
 __STATIC_FORCEINLINE void rb_set(GPIO_TypeDef *p, uint32_t n) { p->BSRR = n; }
 __STATIC_FORCEINLINE void rb_clr(GPIO_TypeDef *p, uint32_t n) { p->BSRR = n << 16U; }
 __STATIC_FORCEINLINE uint32_t rb_read(GPIO_TypeDef *p, uint32_t n) { return (p->IDR & n) != 0U; }
 
-__STATIC_INLINE void PORT_JTAG_SETUP(void) { rb_set(RB_SWDIO_DIR_PORT, RB_SWDIO_DIR_PIN); RB_DAP_Enable(1U); }
-__STATIC_INLINE void PORT_SWD_SETUP(void)  { rb_set(RB_SWDIO_DIR_PORT, RB_SWDIO_DIR_PIN); RB_DAP_Enable(1U); }
+/* PD13 and PD12 are the drive and sense paths of the same target SWDIO net.
+   Merely changing the SN74LVC1T45 direction is insufficient: PD13 must be
+   high-impedance while the target owns the bus, otherwise it can contend
+   with the translator output and force the sampled ACK high. */
+__STATIC_FORCEINLINE void rb_swdio_drive_release(void)
+{
+  RB_SWDIO_OUT_PORT->MODER &= ~GPIO_MODER_MODER13_Msk;
+  __DSB();
+  rb_clr(RB_SWDIO_DIR_PORT, RB_SWDIO_DIR_PIN);
+  __DSB();
+}
+
+__STATIC_FORCEINLINE void rb_swdio_drive_enable(void)
+{
+  /* Keep the line parked high while ownership changes back to the probe. */
+  rb_set(RB_SWDIO_OUT_PORT, RB_SWDIO_OUT_PIN);
+  rb_set(RB_SWDIO_DIR_PORT, RB_SWDIO_DIR_PIN);
+  __DSB();
+  RB_SWDIO_OUT_PORT->MODER =
+      (RB_SWDIO_OUT_PORT->MODER & ~GPIO_MODER_MODER13_Msk) |
+      (1UL << GPIO_MODER_MODER13_Pos);
+  __DSB();
+}
+
+__STATIC_INLINE void PORT_JTAG_SETUP(void) { rb_swdio_drive_enable(); RB_DAP_Enable(1U); }
+__STATIC_INLINE void PORT_SWD_SETUP(void)  { rb_swdio_drive_enable(); RB_DAP_Enable(1U); }
 __STATIC_INLINE void PORT_OFF(void)
 {
-  RB_DAP_Enable(0U);
-  rb_clr(RB_SWDIO_DIR_PORT, RB_SWDIO_DIR_PIN);
+  /* Leave the JTAG/SWD translator enabled as required by the RBLink V3
+     hardware contract. Only release the bidirectional SWDIO driver here. */
+  RB_DAP_Enable(1U);
+  rb_swdio_drive_release();
   rb_clr(RB_NRESET_PORT, RB_NRESET_PIN);
 }
 
@@ -75,16 +101,19 @@ __STATIC_FORCEINLINE uint32_t PIN_SWDIO_TMS_IN(void) { return rb_read(RB_SWDIO_I
 __STATIC_FORCEINLINE void PIN_SWDIO_TMS_SET(void) { rb_set(RB_SWDIO_OUT_PORT, RB_SWDIO_OUT_PIN); }
 __STATIC_FORCEINLINE void PIN_SWDIO_TMS_CLR(void) { rb_clr(RB_SWDIO_OUT_PORT, RB_SWDIO_OUT_PIN); }
 __STATIC_FORCEINLINE uint32_t PIN_SWDIO_IN(void) { return rb_read(RB_SWDIO_IN_PORT, RB_SWDIO_IN_PIN); }
-__STATIC_FORCEINLINE void PIN_SWDIO_OUT(uint32_t bit) { bit ? PIN_SWDIO_TMS_SET() : PIN_SWDIO_TMS_CLR(); }
-__STATIC_FORCEINLINE void PIN_SWDIO_OUT_ENABLE(void) { rb_set(RB_SWDIO_DIR_PORT, RB_SWDIO_DIR_PIN); }
-__STATIC_FORCEINLINE void PIN_SWDIO_OUT_DISABLE(void) { rb_clr(RB_SWDIO_DIR_PORT, RB_SWDIO_DIR_PIN); }
+/* CMSIS-DAP passes right-shifted words to the bit output hooks.  Only bit 0
+   is the current wire bit; testing the whole value changes a valid SWD A5
+   request into A7 whenever any higher request bit remains set. */
+__STATIC_FORCEINLINE void PIN_SWDIO_OUT(uint32_t bit) { (bit & 1U) ? PIN_SWDIO_TMS_SET() : PIN_SWDIO_TMS_CLR(); }
+__STATIC_FORCEINLINE void PIN_SWDIO_OUT_ENABLE(void) { rb_swdio_drive_enable(); }
+__STATIC_FORCEINLINE void PIN_SWDIO_OUT_DISABLE(void) { rb_swdio_drive_release(); }
 __STATIC_FORCEINLINE uint32_t PIN_TDI_IN(void) { return (RB_TDI_PORT->ODR & RB_TDI_PIN) != 0U; }
-__STATIC_FORCEINLINE void PIN_TDI_OUT(uint32_t bit) { bit ? rb_set(RB_TDI_PORT, RB_TDI_PIN) : rb_clr(RB_TDI_PORT, RB_TDI_PIN); }
+__STATIC_FORCEINLINE void PIN_TDI_OUT(uint32_t bit) { (bit & 1U) ? rb_set(RB_TDI_PORT, RB_TDI_PIN) : rb_clr(RB_TDI_PORT, RB_TDI_PIN); }
 __STATIC_FORCEINLINE uint32_t PIN_TDO_IN(void) { return rb_read(RB_TDO_PORT, RB_TDO_PIN); }
 __STATIC_FORCEINLINE uint32_t PIN_nTRST_IN(void) { return (RB_NTRST_PORT->ODR & RB_NTRST_PIN) != 0U; }
-__STATIC_FORCEINLINE void PIN_nTRST_OUT(uint32_t bit) { bit ? rb_set(RB_NTRST_PORT, RB_NTRST_PIN) : rb_clr(RB_NTRST_PORT, RB_NTRST_PIN); }
+__STATIC_FORCEINLINE void PIN_nTRST_OUT(uint32_t bit) { (bit & 1U) ? rb_set(RB_NTRST_PORT, RB_NTRST_PIN) : rb_clr(RB_NTRST_PORT, RB_NTRST_PIN); }
 __STATIC_FORCEINLINE uint32_t PIN_nRESET_IN(void) { return (RB_NRESET_PORT->ODR & RB_NRESET_PIN) == 0U; }
-__STATIC_FORCEINLINE void PIN_nRESET_OUT(uint32_t bit) { bit ? rb_clr(RB_NRESET_PORT, RB_NRESET_PIN) : rb_set(RB_NRESET_PORT, RB_NRESET_PIN); }
+__STATIC_FORCEINLINE void PIN_nRESET_OUT(uint32_t bit) { (bit & 1U) ? rb_clr(RB_NRESET_PORT, RB_NRESET_PIN) : rb_set(RB_NRESET_PORT, RB_NRESET_PIN); }
 __STATIC_INLINE void LED_CONNECTED_OUT(uint32_t bit) { RB_LED_State((uint8_t)bit); }
 __STATIC_INLINE void LED_RUNNING_OUT(uint32_t bit) { RB_LED_Data((uint8_t)bit); }
 __STATIC_INLINE uint32_t TIMESTAMP_GET(void) { return DWT->CYCCNT / 168U; }

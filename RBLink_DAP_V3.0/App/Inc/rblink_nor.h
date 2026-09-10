@@ -4,9 +4,12 @@
 #include <stdint.h>
 
 void RB_NOR_Init(void);
+uint8_t RB_NOR_IsReady(void);
 uint32_t RB_NOR_ReadJEDEC(void);
+uint32_t RB_NOR_Capacity(void);
 uint8_t RB_NOR_Read(uint32_t address, uint8_t *data, uint16_t length);
 uint8_t RB_NOR_PageProgram(uint32_t address, const uint8_t *data, uint16_t length);
+uint8_t RB_NOR_Program(uint32_t address, const uint8_t *data, uint16_t length);
 uint8_t RB_NOR_Erase4K(uint32_t address);
 
 #endif

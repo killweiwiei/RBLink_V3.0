@@ -40,7 +40,6 @@ void RB_Board_Init(void)
 
   output(RB_NRESET_PORT, RB_NRESET_PIN, GPIO_PIN_RESET); /* NMOS off */
   output(RB_SWCLK_PORT, RB_SWCLK_PIN, GPIO_PIN_SET);
-  output(RB_SWDIO_OUT_PORT, RB_SWDIO_OUT_PIN, GPIO_PIN_SET);
   output(RB_TDI_PORT, RB_TDI_PIN, GPIO_PIN_SET);
   output(RB_NTRST_PORT, RB_NTRST_PIN, GPIO_PIN_SET);
   output(RB_SPI_NSS_PORT, RB_SPI_NSS_PIN, GPIO_PIN_SET);
@@ -49,10 +48,19 @@ void RB_Board_Init(void)
   output(RB_LED_STATE_PORT, RB_LED_STATE_PIN, GPIO_PIN_RESET);
   output(RB_LED_DATA_PORT, RB_LED_DATA_PIN, GPIO_PIN_RESET);
 
-  io.Pin = RB_SWDIO_IN_PIN | RB_TDO_PIN | RB_SWO_PIN;
+  /* Both SWDIO MCU pins start released. DAP connect restores PD13 to
+     push-pull only after selecting the MCU-to-target translator direction. */
+  HAL_GPIO_WritePin(RB_SWDIO_OUT_PORT, RB_SWDIO_OUT_PIN, GPIO_PIN_SET);
+  io.Pin = RB_SWDIO_IN_PIN | RB_SWDIO_OUT_PIN | RB_TDO_PIN | RB_SWO_PIN;
   io.Mode = GPIO_MODE_INPUT;
   io.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOD, &io);
+  /* Preconfigure PD13's electrical characteristics without enabling its
+     output driver; turnaround only needs to change MODER afterwards. */
+  RB_SWDIO_OUT_PORT->OTYPER &= ~RB_SWDIO_OUT_PIN;
+  RB_SWDIO_OUT_PORT->OSPEEDR =
+      (RB_SWDIO_OUT_PORT->OSPEEDR & ~(3UL << GPIO_OSPEEDR_OSPEED13_Pos)) |
+      (3UL << GPIO_OSPEEDR_OSPEED13_Pos);
   io.Pin = RB_VTRGT_STATUS_PIN | RB_HARDKEY_PIN;
   HAL_GPIO_Init(GPIOE, &io);
   io.Pin = RB_ESP_READY_PIN;

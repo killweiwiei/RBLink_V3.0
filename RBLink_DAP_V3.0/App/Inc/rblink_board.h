@@ -16,6 +16,7 @@
 
 #define RB_UART_TX_PIN         GPIO_PIN_9       /* USART1_TX */
 #define RB_UART_RX_PIN         GPIO_PIN_10      /* USART1_RX */
+#define RB_DEBUG_PORT          GPIOB
 #define RB_DEBUG_TX_PIN        GPIO_PIN_10      /* USART3_TX */
 #define RB_DEBUG_RX_PIN        GPIO_PIN_11      /* USART3_RX */
 

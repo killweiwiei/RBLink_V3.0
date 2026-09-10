@@ -30,6 +30,8 @@ extern uint8_t rblink_platform_power(const uint8_t *request, uint8_t request_len
                                     uint8_t *response, uint8_t *response_len);
 extern uint8_t rblink_platform_wifi(const uint8_t *request, uint8_t request_len,
                                    uint8_t *response, uint8_t *response_len);
+extern uint8_t rblink_platform_storage(const uint8_t *request, uint8_t request_len,
+                                      uint8_t *response, uint8_t *response_len);
 
 typedef uint8_t (*ltlink_handler_t)(const uint8_t *, uint8_t, uint8_t *, uint8_t *);
 
@@ -59,7 +61,7 @@ uint32_t rblink_vendor_process(uint8_t command,
         response[3] = RBLINK_PROTOCOL_MAJOR;
         response[4] = RBLINK_PROTOCOL_MINOR;
         response[5] = RBLINK_CAP_SPI | RBLINK_CAP_I2C | RBLINK_CAP_CAN |
-                      RBLINK_CAP_POWER | RBLINK_CAP_WIFI;
+                      RBLINK_CAP_POWER | RBLINK_CAP_WIFI | RBLINK_CAP_STORAGE;
         response[6] = 0U;
         response[7] = RBLINK_FIRMWARE_MAJOR;
         response[8] = RBLINK_FIRMWARE_MINOR;
@@ -90,6 +92,8 @@ uint32_t rblink_vendor_process(uint8_t command,
         handler = rblink_platform_power;
     } else if (command == ID_RBLINK_WIFI) {
         handler = rblink_platform_wifi;
+    } else if (command == ID_RBLINK_STORAGE) {
+        handler = rblink_platform_storage;
     }
 
     status = handler ? handler(&request[1], request_len,

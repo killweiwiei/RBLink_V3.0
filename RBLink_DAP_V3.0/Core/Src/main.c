@@ -24,6 +24,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "rblink_board.h"
+#include "rblink_debug.h"
 #include "rblink_usb.h"
 #include "rblink_uart.h"
 #include "rblink_wireless.h"
@@ -95,6 +96,7 @@ int main(void)
   MX_GPIO_Init();
   /* USER CODE BEGIN 2 */
   RB_Board_Init();
+  RB_Debug_Init();
   RB_USB_Init();
   /* Restore target power only after the board safe state and DAP setup. */
   RB_Power_Init();
@@ -116,6 +118,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     RB_USB_Task();
+    RB_Debug_Task();
     RB_UART_Task();
     RB_Wireless_Task();
     RB_Bus_Task();

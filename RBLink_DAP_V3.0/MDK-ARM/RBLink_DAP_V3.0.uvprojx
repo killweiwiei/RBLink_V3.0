@@ -81,7 +81,7 @@
           </BeforeMake>
           <AfterMake>
             <RunUserProg1>0</RunUserProg1>
-            <RunUserProg2>1</RunUserProg2>
+            <RunUserProg2>0</RunUserProg2>
             <UserProg1Name></UserProg1Name>
             <UserProg2Name></UserProg2Name>
             <UserProg1Dos16Mode>0</UserProg1Dos16Mode>
@@ -429,6 +429,11 @@
               <FilePath>../App/Src/rblink_board.c</FilePath>
             </File>
             <File>
+              <FileName>rblink_debug.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/Src/rblink_debug.c</FilePath>
+            </File>
+            <File>
               <FileName>rblink_uart.c</FileName>
               <FileType>1</FileType>
               <FilePath>../App/Src/rblink_uart.c</FilePath>
@@ -462,6 +467,11 @@
               <FileName>rblink_nor.c</FileName>
               <FileType>1</FileType>
               <FilePath>../App/Src/rblink_nor.c</FilePath>
+            </File>
+            <File>
+              <FileName>rblink_storage.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/Src/rblink_storage.c</FilePath>
             </File>
           </Files>
         </Group>

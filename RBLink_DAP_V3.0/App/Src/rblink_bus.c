@@ -18,17 +18,27 @@ static DAC_HandleTypeDef hdac;
 static uint8_t power_initialized;
 static uint8_t power_enabled;
 static uint16_t power_dac_code;
+static uint8_t power_dac_gpio_high;
+static uint16_t power_target_mv;
+static uint8_t power_closed_loop;
 static uint8_t power_save_pending;
 static uint32_t power_save_tick;
+static uint32_t power_control_tick;
 
 /* Sector 11 is reserved for persistent settings by the Keil IROM limit.
    Records are appended and the sector is erased only after all slots are
    consumed, avoiding one sector erase for every voltage-slider movement. */
 #define RB_CONFIG_ADDRESS       0x080E0000UL
 #define RB_CONFIG_END           0x08100000UL
-#define RB_CONFIG_MAGIC         0x32504252UL /* "RBP2": invalidates the old uncalibrated DAC mapping. */
-#define RB_POWER_DEFAULT_DAC    1547U        /* Inverted FB injection: (5.0-3.3)/(5.0-0.5)*4095 */
+#define RB_CONFIG_MAGIC         0x36504252UL /* "RBP6": persistent closed-loop voltage target. */
+#define RB_POWER_DEFAULT_DAC    1588U        /* Approx. 3.3 V from the measured six-point fit. */
+#define RB_POWER_DEFAULT_MV     3300U
 #define RB_POWER_SAVE_DELAY_MS  1500U
+#define RB_POWER_CONTROL_MS     20U
+#define RB_POWER_STABLE_MS      100U          /* Reduce ADC load after convergence. */
+#define RB_POWER_ADC_FULL_MV    6600U        /* PA1 uses the board's nominal 2:1 divider. */
+#define RB_POWER_DEADBAND_ADC   4            /* About 6.4 mV at VOUT. */
+#define RB_POWER_MAX_STEP       64
 
 typedef struct {
     uint32_t magic;
@@ -39,9 +49,12 @@ typedef struct {
 
 static uint8_t power_record_valid(const rb_power_record_t *record)
 {
-    uint16_t dac = (uint16_t)((record->data >> 1U) & 0x0FFFU);
+    uint16_t dac = (uint16_t)(record->data & 0x0FFFU);
+    uint16_t target_mv = (uint16_t)((record->data >> 12U) & 0x1FFFU);
+    uint8_t closed_loop = (uint8_t)((record->data >> 25U) & 1U);
     return (record->magic == RB_CONFIG_MAGIC) &&
-           (record->data_inverse == ~record->data) && (dac <= 4095U);
+           (record->data_inverse == ~record->data) && (dac <= 4095U) &&
+           (!closed_loop || ((target_mv >= 550U) && (target_mv <= 5000U)));
 }
 
 static const rb_power_record_t *power_find_latest(uint32_t *next_address)
@@ -74,7 +87,11 @@ static uint8_t power_save(void)
     const rb_power_record_t *latest;
     FLASH_EraseInitTypeDef erase = {0};
     uint32_t error = 0U, address, sequence = 1U;
-    uint32_t data = ((uint32_t)power_dac_code << 1U) | (power_enabled ? 1U : 0U);
+    /* Persist the voltage target. RBLink restores it enabled after reset so
+       VPOWER can supply translator VCCB when no external VREF is present. */
+    uint32_t data = (uint32_t)power_dac_code |
+                    ((uint32_t)power_target_mv << 12U) |
+                    ((uint32_t)power_closed_loop << 25U);
     latest = power_find_latest(&address);
     if (latest != 0) sequence = latest->sequence + 1U;
     if (address + sizeof(rb_power_record_t) > RB_CONFIG_END) {
@@ -116,12 +133,18 @@ static uint8_t spi_config(const uint8_t *p, uint8_t len)
     /* [CONFIG][speed_Hz:u32][mode:0..3][lsb_first:0/1] */
     if (len != 7U) return LT_BAD_LENGTH;
     speed = get_u32(&p[1]);
-    if ((speed == 0U) || (p[5] > 3U) || (p[6] > 1U)) return LT_BAD_LENGTH;
+    if ((speed < 164063U) || (speed > 21000000U) ||
+        (p[5] > 3U) || (p[6] > 1U)) return LT_BAD_LENGTH;
 
     __HAL_RCC_GPIOB_CLK_ENABLE();
     /* Always release chip select before reconfiguring clock polarity. */
     HAL_GPIO_WritePin(RB_SPI_NSS_PORT, RB_SPI_NSS_PIN, GPIO_PIN_SET);
     __HAL_RCC_SPI2_CLK_ENABLE();
+    /* Online speed/mode changes are supported. Stop the previous instance
+       cleanly before resetting the HAL handle and applying the new divider. */
+    if (hspi2.Instance == SPI2) {
+        if (HAL_SPI_DeInit(&hspi2) != HAL_OK) return LT_IO_ERROR;
+    }
     gpio.Pin = RB_SPI_PINS;
     gpio.Mode = GPIO_MODE_AF_PP;
     gpio.Pull = GPIO_NOPULL;
@@ -167,7 +190,8 @@ uint8_t rblink_platform_spi(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *
     if (p[0] == 2U) {
         if (len != 1U) return LT_BAD_LENGTH;
         HAL_GPIO_WritePin(RB_SPI_NSS_PORT, RB_SPI_NSS_PIN, GPIO_PIN_SET);
-        RB_SPI_Enable(0U);
+        /* Close the SPI peripheral but keep the target translator enabled. */
+        RB_SPI_Enable(1U);
         if (hspi2.Instance == SPI2) (void)HAL_SPI_DeInit(&hspi2);
         memset(&hspi2, 0, sizeof(hspi2));
         return LT_OK;
@@ -283,7 +307,8 @@ uint8_t rblink_platform_i2c(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *
     uint8_t addr, txlen, rxlen;
     if (p[0] == 2U) {
         if (len != 1U) return LT_BAD_LENGTH;
-        RB_I2C_Enable(0U);
+        /* Close the controller but keep the target translator enabled. */
+        RB_I2C_Enable(1U);
         if (hi2c3.Instance == I2C3) (void)HAL_I2C_DeInit(&hi2c3);
         memset(&hi2c3, 0, sizeof(hi2c3));
         return LT_OK;
@@ -396,23 +421,124 @@ uint8_t rblink_platform_can(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *
 static uint16_t adc_read(uint32_t channel)
 {
     ADC_ChannelConfTypeDef cfg = {0};
+    uint16_t value;
     cfg.Channel = channel; cfg.Rank = 1U; cfg.SamplingTime = ADC_SAMPLETIME_144CYCLES;
     if ((HAL_ADC_ConfigChannel(&hadc1, &cfg) != HAL_OK) ||
         (HAL_ADC_Start(&hadc1) != HAL_OK) ||
-        (HAL_ADC_PollForConversion(&hadc1, 10U) != HAL_OK)) return 0xFFFFU;
-    return (uint16_t)HAL_ADC_GetValue(&hadc1);
+        (HAL_ADC_PollForConversion(&hadc1, 10U) != HAL_OK)) {
+        (void)HAL_ADC_Stop(&hadc1);
+        return 0xFFFFU;
+    }
+    value = (uint16_t)HAL_ADC_GetValue(&hadc1);
+    /* Single-shot sampling must not leave ADON set between control/status
+       polls, especially after the target supply is disabled. */
+    (void)HAL_ADC_Stop(&hadc1);
+    return value;
+}
+
+/* Six-point feed-forward calibration. Closed-loop ADC feedback removes the
+   remaining board, temperature and load error after this initial estimate. */
+static uint16_t power_dac_from_mv(uint16_t target_mv)
+{
+    int32_t code = (5057452L - (int32_t)target_mv * 1000L + 553L) / 1107L;
+    if (code < 0) return 0U;
+    if (code > 4095) return 4095U;
+    return (uint16_t)code;
+}
+
+static uint8_t power_set_dac(uint16_t dac_code)
+{
+    GPIO_InitTypeDef gpio = {0};
+    if (!power_initialized || (dac_code > 4095U)) return 0U;
+    if (power_dac_gpio_high) {
+        /* PA4 is temporarily used as a rail-to-rail GPIO only at the low-voltage
+           saturation limit. Restore the analogue function before changing DAC. */
+        gpio.Pin = RB_DAC_VOUT_PIN;
+        gpio.Mode = GPIO_MODE_ANALOG;
+        gpio.Pull = GPIO_NOPULL;
+        HAL_GPIO_Init(GPIOA, &gpio);
+        if (HAL_DAC_Start(&hdac, DAC_CHANNEL_1) != HAL_OK) return 0U;
+        power_dac_gpio_high = 0U;
+    }
+    if (HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, dac_code) != HAL_OK) return 0U;
+    power_dac_code = dac_code;
+    return 1U;
+}
+
+static uint8_t power_force_dac_high(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+    if (!power_initialized) return 0U;
+    if (HAL_DAC_Stop(&hdac, DAC_CHANNEL_1) != HAL_OK) return 0U;
+    /* The buffered DAC stops near VDDA. A GPIO high level gains the final few
+       tens of millivolts of FB injection and brings TLV759P close to its
+       specified 0.55 V minimum without extra ADC sampling. */
+    HAL_GPIO_WritePin(GPIOA, RB_DAC_VOUT_PIN, GPIO_PIN_SET);
+    gpio.Pin = RB_DAC_VOUT_PIN;
+    gpio.Mode = GPIO_MODE_OUTPUT_PP;
+    gpio.Pull = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOA, &gpio);
+    power_dac_gpio_high = 1U;
+    power_dac_code = 4095U;
+    return 1U;
 }
 
 static void power_off(void)
 {
+    /* Internal fault shutdown only. Host commands are never allowed to remove
+       VPOWER because all target-side level translators require this rail. */
+    /* Do not leave the feedback node driven by GPIO while target power is off. */
+    if (power_dac_gpio_high) (void)power_set_dac(4095U);
     /* Remove the load-facing rail first, then its upstream boost supply. */
     HAL_GPIO_WritePin(RB_LDO_EN_PORT, RB_LDO_EN_PIN, GPIO_PIN_RESET);
     HAL_Delay(1U);
     HAL_GPIO_WritePin(RB_BOOST_EN_PORT, RB_BOOST_EN_PIN, GPIO_PIN_RESET);
+    if (power_initialized) (void)HAL_ADC_Stop(&hadc1);
     power_enabled = 0U;
 }
 
-static uint8_t power_apply(uint8_t enable, uint16_t dac_code)
+static void power_control_task(void)
+{
+    uint16_t measured_adc, target_adc, next_code;
+    int32_t error, step, next;
+    uint32_t now = HAL_GetTick();
+    if (!power_enabled || !power_closed_loop ||
+        ((int32_t)(now - power_control_tick) < 0)) return;
+    power_control_tick = now + RB_POWER_CONTROL_MS;
+    measured_adc = adc_read(ADC_CHANNEL_1);
+    if (measured_adc == 0xFFFFU) return;
+    target_adc = (uint16_t)(((uint32_t)power_target_mv * 4095U +
+                            (RB_POWER_ADC_FULL_MV / 2U)) / RB_POWER_ADC_FULL_MV);
+    error = (int32_t)measured_adc - (int32_t)target_adc;
+    if ((error >= -RB_POWER_DEADBAND_ADC) && (error <= RB_POWER_DEADBAND_ADC)) {
+        power_control_tick = now + RB_POWER_STABLE_MS;
+        return;
+    }
+    if (power_dac_gpio_high) {
+        /* GPIO high is the absolute low-output limit. Stay there while VOUT is
+           high; return to DAC mode when the requested output must rise. */
+        if (error < -RB_POWER_DEADBAND_ADC) (void)power_set_dac(4095U);
+        return;
+    }
+    if ((power_dac_code == 4095U) && (error > RB_POWER_DEADBAND_ADC)) {
+        (void)power_force_dac_high();
+        return;
+    }
+    /* One PA1 ADC count is about 1.61 mV at VOUT; one DAC count changes VOUT
+       by about 1.11 mV. A gain of 1.5 corrects most error while the per-cycle
+       clamp prevents overshoot and noisy limit cycling. */
+    step = (error * 3L) / 2L;
+    if (step > RB_POWER_MAX_STEP) step = RB_POWER_MAX_STEP;
+    if (step < -RB_POWER_MAX_STEP) step = -RB_POWER_MAX_STEP;
+    next = (int32_t)power_dac_code + step;
+    if (next < 0) next = 0;
+    if (next > 4095) next = 4095;
+    next_code = (uint16_t)next;
+    if (next_code != power_dac_code) (void)power_set_dac(next_code);
+}
+
+static uint8_t power_apply(uint16_t dac_code)
 {
     GPIO_InitTypeDef gpio = {0};
     DAC_ChannelConfTypeDef dcfg = {0};
@@ -432,13 +558,11 @@ static uint8_t power_apply(uint8_t enable, uint16_t dac_code)
     if ((HAL_DAC_ConfigChannel(&hdac, &dcfg, DAC_CHANNEL_1) != HAL_OK) ||
         (HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, dac_code) != HAL_OK) ||
         (HAL_DAC_Start(&hdac, DAC_CHANNEL_1) != HAL_OK)) return 0U;
-    power_initialized = 1U; power_dac_code = dac_code;
-    if (enable) {
-        HAL_GPIO_WritePin(RB_BOOST_EN_PORT, RB_BOOST_EN_PIN, GPIO_PIN_SET);
-        HAL_Delay(5U);
-        HAL_GPIO_WritePin(RB_LDO_EN_PORT, RB_LDO_EN_PIN, GPIO_PIN_SET);
-        power_enabled = 1U;
-    } else power_off();
+    power_initialized = 1U; power_dac_gpio_high = 0U; power_dac_code = dac_code;
+    HAL_GPIO_WritePin(RB_BOOST_EN_PORT, RB_BOOST_EN_PIN, GPIO_PIN_SET);
+    HAL_Delay(5U);
+    HAL_GPIO_WritePin(RB_LDO_EN_PORT, RB_LDO_EN_PIN, GPIO_PIN_SET);
+    power_enabled = 1U;
     return 1U;
 }
 
@@ -446,13 +570,15 @@ void RB_Power_Init(void)
 {
     uint32_t next_address;
     const rb_power_record_t *record = power_find_latest(&next_address);
-    uint8_t enable = 1U;
     uint16_t dac = RB_POWER_DEFAULT_DAC;
+    power_target_mv = RB_POWER_DEFAULT_MV;
+    power_closed_loop = 1U;
     if (record != 0) {
-        enable = (uint8_t)(record->data & 1U);
-        dac = (uint16_t)((record->data >> 1U) & 0x0FFFU);
+        dac = (uint16_t)(record->data & 0x0FFFU);
+        power_target_mv = (uint16_t)((record->data >> 12U) & 0x1FFFU);
+        power_closed_loop = (uint8_t)((record->data >> 25U) & 1U);
     }
-    if (!power_apply(enable, dac)) power_off();
+    if (!power_apply(dac)) power_off();
     /* Store the factory default on the first boot so all later starts follow
        the exact same validated restore path. */
     if ((record == 0) && power_initialized) (void)power_save();
@@ -460,6 +586,7 @@ void RB_Power_Init(void)
 
 void RB_Bus_Task(void)
 {
+    power_control_task();
     if (power_save_pending &&
         ((int32_t)(HAL_GetTick() - power_save_tick) >= 0)) {
         if (power_save()) power_save_pending = 0U;
@@ -472,16 +599,33 @@ uint8_t rblink_platform_power(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t
     uint16_t dac_code;
     if (p[0] == 2U) {
         if (len != 1U) return LT_BAD_LENGTH;
-        power_off();
+        /* V3 hardware requires VPOWER continuously for its level translators.
+           Keep CLOSE as a successful no-op for older host compatibility. */
+        if (!power_enabled && !power_apply(power_dac_code)) return LT_IO_ERROR;
         return LT_OK;
     }
     if (p[0] == 0U) {
-        /* [CONFIG][enable][raw DAC code:u16]. Raw code is intentional until
-         * the final FB injection network is measured and calibrated. */
-        if ((len != 4U) || (p[1] > 1U)) return LT_BAD_LENGTH;
-        dac_code = (uint16_t)p[2] | ((uint16_t)p[3] << 8U);
-        if (dac_code > 4095U) return LT_BAD_LENGTH;
-        if (!power_apply(p[1], dac_code)) { power_off(); return LT_IO_ERROR; }
+        /* Legacy: [CONFIG][enable][raw DAC:u16].
+           Closed loop: [CONFIG][enable][target_mV:u16][mode=1]. */
+        if (((len != 4U) && (len != 5U)) || (p[1] > 1U)) return LT_BAD_LENGTH;
+        if (len == 5U) {
+            power_target_mv = (uint16_t)p[2] | ((uint16_t)p[3] << 8U);
+            if ((p[4] != 1U) || (power_target_mv < 550U) ||
+                (power_target_mv > 5000U)) return LT_BAD_LENGTH;
+            power_closed_loop = 1U;
+            dac_code = power_dac_from_mv(power_target_mv);
+        } else {
+            dac_code = (uint16_t)p[2] | ((uint16_t)p[3] << 8U);
+            if (dac_code > 4095U) return LT_BAD_LENGTH;
+            power_closed_loop = 0U;
+            power_target_mv = 0U;
+        }
+        /* A live closed-loop setpoint change only updates DAC; avoid
+           reinitializing DAC/ADC or disturbing the enabled LDO rail. */
+        if ((len == 5U) && power_initialized && power_enabled) {
+            if (!power_set_dac(dac_code)) { power_off(); return LT_IO_ERROR; }
+        } else if (!power_apply(dac_code)) { power_off(); return LT_IO_ERROR; }
+        power_control_tick = HAL_GetTick() + RB_POWER_CONTROL_MS;
         power_save_pending = 1U;
         power_save_tick = HAL_GetTick() + RB_POWER_SAVE_DELAY_MS;
         return LT_OK;
@@ -489,14 +633,26 @@ uint8_t rblink_platform_power(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t
     if (len != 1U) return LT_BAD_LENGTH;
     if (!power_initialized) return LT_IO_ERROR;
     r[0] = power_enabled;
-    /* Keep the wire response order VREF, VOUT, NTC despite the PCB pin move. */
-    put_u16(&r[1], adc_read(ADC_CHANNEL_2));
-    put_u16(&r[3], adc_read(ADC_CHANNEL_1));
-    put_u16(&r[5], adc_read(ADC_CHANNEL_0));
-    if ((r[1] == 0xFFU && r[2] == 0xFFU) ||
-        (r[3] == 0xFFU && r[4] == 0xFFU) ||
-        (r[5] == 0xFFU && r[6] == 0xFFU)) return LT_IO_ERROR;
+    /* An off supply reports a deterministic zero trace without starting ADC.
+       This avoids three conversions for every host status poll while disabled. */
+    if (!power_enabled) {
+        memset(&r[1], 0, 6U);
+    } else {
+        /* Keep the wire response order VREF, VOUT, NTC despite the PCB pin move. */
+        put_u16(&r[1], adc_read(ADC_CHANNEL_2));
+        put_u16(&r[3], adc_read(ADC_CHANNEL_1));
+        put_u16(&r[5], adc_read(ADC_CHANNEL_0));
+        if ((r[1] == 0xFFU && r[2] == 0xFFU) ||
+            (r[3] == 0xFFU && r[4] == 0xFFU) ||
+            (r[5] == 0xFFU && r[6] == 0xFFU)) return LT_IO_ERROR;
+    }
+    /* Bytes 9..10 remain reserved for wire compatibility. PA4 is no longer
+       sampled: the closed loop only needs PA1, reducing ADC work and allowing
+       PA4 to become a rail-to-rail GPIO at the 0.55 V saturation limit. */
+    r[9] = 0xFFU; r[10] = 0xFFU;
     put_u16(&r[7], power_dac_code);
-    *rlen = 9U;
+    put_u16(&r[11], power_target_mv);
+    r[13] = power_closed_loop;
+    *rlen = 14U;
     return LT_OK;
 }

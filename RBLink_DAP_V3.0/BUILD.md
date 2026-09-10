@@ -16,9 +16,12 @@ log contains errors and leaves the HEX in `MDK-ARM/RBLink_DAP_V3.0`.
 - Product code is isolated under `App`; CubeMX regeneration must preserve it.
 - USB is one composite device: interface 0 CMSIS-DAP v2 Bulk/WinUSB and
   interfaces 1/2 CDC ACM for target USART1.
-- Private CMSIS-DAP protocol 1.4 commands provide SPI2, I2C3, CAN1, raw-DAC
-  power control and transactional Wi-Fi provisioning through STM32 SPI1. The
-  information response also reports firmware and board revision.
+- Interface 0 publishes Arm's standard CMSIS-DAP v2 WinUSB GUID
+  `{CDB3B5AD-293B-4663-AA36-1AAE46463776}`. Keep this exact value so Keil and
+  other standard debuggers can discover the probe.
+- Private CMSIS-DAP protocol 1.5 commands provide SPI2, I2C3, CAN1, raw-DAC
+  power control, transactional Wi-Fi provisioning and bounded W25Q32 partition
+  access. The information response also reports firmware and board revision.
 - SPI1 exchanges fixed 512-byte CRC frames with ESP32-C3; SPI3 owns external NOR.
 - Wireless UART responses can use the full 492-byte frame payload; reserved bits,
   channels and unused payload bytes are validated/cleared on both MCUs.

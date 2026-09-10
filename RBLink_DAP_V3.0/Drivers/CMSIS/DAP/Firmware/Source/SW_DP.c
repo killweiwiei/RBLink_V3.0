@@ -26,6 +26,7 @@
  *---------------------------------------------------------------------------*/
 
 #include "DAP_config.h"
+#include "rblink_debug.h"
 #include "DAP.h"
 
 
@@ -55,6 +56,13 @@
   PIN_DELAY()
 
 #define PIN_DELAY() PIN_DELAY_SLOW(DAP_Data.clock_delay)
+
+static uint8_t SWD_WireRequest(uint32_t request) {
+  uint32_t fields = request & 0x0FU;
+  uint32_t parity = ((fields >> 0U) ^ (fields >> 1U) ^
+                     (fields >> 2U) ^ (fields >> 3U)) & 1U;
+  return (uint8_t)(0x81U | (fields << 1U) | (parity << 5U));
+}
 
 
 // Generate SWJ Sequence
@@ -197,6 +205,7 @@ static uint8_t SWD_Transfer##speed (uint32_t request, uint32_t *data) {         
         SW_CLOCK_CYCLE();                                                       \
       }                                                                         \
       PIN_SWDIO_OUT_ENABLE();                                                   \
+      RB_Debug_SWDTrace(SWD_WireRequest(request), (uint8_t)ack, 'R', val);      \
     } else {                                                                    \
       /* Turnaround */                                                          \
       for (n = DAP_Data.swd_conf.turnaround; n; n--) {                          \
@@ -212,6 +221,8 @@ static uint8_t SWD_Transfer##speed (uint32_t request, uint32_t *data) {         
         val >>= 1;                                                              \
       }                                                                         \
       SW_WRITE_BIT(parity);             /* Write Parity Bit */                  \
+      RB_Debug_SWDTrace(SWD_WireRequest(request), (uint8_t)ack, 'W',            \
+                        data ? *data : 0U);                                      \
     }                                                                           \
     /* Capture Timestamp */                                                     \
     if (request & DAP_TRANSFER_TIMESTAMP) {                                     \
@@ -248,15 +259,21 @@ static uint8_t SWD_Transfer##speed (uint32_t request, uint32_t *data) {         
       }                                                                         \
     }                                                                           \
     PIN_SWDIO_OUT(1U);                                                          \
+    RB_Debug_SWDTrace(SWD_WireRequest(request), (uint8_t)ack, 'E', 0U);         \
     return ((uint8_t)ack);                                                      \
   }                                                                             \
                                                                                 \
   /* Protocol error */                                                          \
+  val = 0U;                                                                     \
+  parity = 0U;                                                                  \
   for (n = DAP_Data.swd_conf.turnaround + 32U + 1U; n; n--) {                   \
-    SW_CLOCK_CYCLE();                   /* Back off data phase */               \
+    SW_READ_BIT(bit);                    /* Capture raw backoff input */          \
+    if (parity < 32U) { val |= (bit & 1U) << parity; }                           \
+    parity++;                                                                    \
   }                                                                             \
   PIN_SWDIO_OUT_ENABLE();                                                       \
   PIN_SWDIO_OUT(1U);                                                            \
+  RB_Debug_SWDTrace(SWD_WireRequest(request), (uint8_t)ack, 'E', val);          \
   return ((uint8_t)ack);                                                        \
 }
 
