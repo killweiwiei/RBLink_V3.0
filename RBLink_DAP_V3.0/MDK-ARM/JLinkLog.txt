@@ -1,0 +1,136 @@
+T668C 000:207.217   SEGGER J-Link V7.20b Log File
+T668C 000:207.341   DLL Compiled: May 21 2021 17:05:23
+T668C 000:207.351   Logging started @ 2026-09-11 06:11
+T668C 000:207.360 - 207.365ms
+T668C 000:207.374 JLINK_SetWarnOutHandler(...)
+T668C 000:207.385 - 0.015ms
+T668C 000:207.395 JLINK_OpenEx(...)
+T668C 000:208.426   Firmware: J-Link V9 compiled May  7 2021 16:26:12
+T668C 000:208.720   Firmware: J-Link V9 compiled May  7 2021 16:26:12
+T668C 000:208.872   Decompressing FW timestamp took 131 us
+T668C 000:214.691   Hardware: V9.70
+T668C 000:214.717   S/N: 57740596
+T668C 000:214.731   OEM: SEGGER
+T668C 000:214.743   Feature(s): RDI, GDB, FlashDL, FlashBP, JFlash
+T668C 000:215.550   TELNET listener socket opened on port 19021
+T668C 000:215.645   WEBSRV Starting webserver
+T668C 000:215.826   WEBSRV Webserver running on local port 19080
+T668C 000:215.844 - 8.453ms returns "O.K."
+T668C 000:215.869 JLINK_GetEmuCaps()
+T668C 000:215.880 - 0.015ms returns 0xB9FF7BBF
+T668C 000:215.896 JLINK_TIF_GetAvailable(...)
+T668C 000:216.057 - 0.169ms
+T668C 000:216.076 JLINK_SetErrorOutHandler(...)
+T668C 000:216.085 - 0.013ms
+T668C 000:216.104 JLINK_ExecCommand("ProjectFile = "E:\User_Data\Project\Link\LTLink\project\RBLink_V3.0\RBLink_DAP_V3.0\MDK-ARM\JLinkSettings.ini"", ...). 
+T668C 000:223.824   Ref file found at: D:\Keil_v5\ARM\Segger\JLinkDevices.ref
+T668C 000:223.915   XML referenced by ref file: D:\Program Files (x86)\SEGGER\JLink\JLinkDevices.xml
+T668C 000:224.519   D:\Program Files (x86)\SEGGER\JLink\JLinkDevices.xml evaluated successfully.
+T668C 000:234.618 - 18.532ms returns 0x00
+T668C 000:234.653 JLINK_ExecCommand("Device = STM32F407VGTx", ...). 
+T668C 000:235.098   Device "STM32F407VG" selected.
+T668C 000:235.512 - 0.856ms returns 0x00
+T668C 000:235.535 JLINK_GetHardwareVersion()
+T668C 000:235.544 - 0.013ms returns 97000
+T668C 000:235.558 JLINK_GetDLLVersion()
+T668C 000:235.567 - 0.013ms returns 72002
+T668C 000:235.577 JLINK_GetOEMString(...)
+T668C 000:235.587 JLINK_GetFirmwareString(...)
+T668C 000:235.596 - 0.013ms
+T668C 000:235.608 JLINK_GetDLLVersion()
+T668C 000:235.617 - 0.013ms returns 72002
+T668C 000:235.627 JLINK_GetCompileDateTime()
+T668C 000:235.636 - 0.012ms
+T668C 000:235.647 JLINK_GetFirmwareString(...)
+T668C 000:235.656 - 0.013ms
+T668C 000:235.668 JLINK_GetHardwareVersion()
+T668C 000:235.677 - 0.013ms returns 97000
+T668C 000:235.688 JLINK_GetSN()
+T668C 000:235.697 - 0.013ms returns 57740596
+T668C 000:235.708 JLINK_GetOEMString(...)
+T668C 000:235.721 JLINK_TIF_Select(JLINKARM_TIF_SWD)
+T668C 000:236.393 - 0.684ms returns 0x00
+T668C 000:236.414 JLINK_HasError()
+T668C 000:236.433 JLINK_SetSpeed(10000)
+T668C 000:236.547 - 0.125ms
+T668C 000:236.833 JLINK_HasError()
+T668C 000:236.849 JLINK_SetResetType(JLINKARM_RESET_TYPE_NORMAL)
+T668C 000:236.858 - 0.013ms returns JLINKARM_RESET_TYPE_NORMAL
+T668C 000:236.869 JLINK_Reset()
+T668C 000:237.124   InitTarget() start
+T668C 000:237.145    J-Link Script File: Executing InitTarget()
+T668C 000:242.386   WARNING: Unknown DEV_ID found: 0x00000000
+T668C 000:242.410   Security detection skipped.
+T668C 000:242.815   InitTarget() end
+T668C 000:243.309   Found SW-DP with ID 0x0BC11477
+T668C 000:244.947   DPIDR: 0x0BC11477
+T668C 000:244.970   Scanning AP map to find all available APs
+T668C 000:245.419   AP[1]: Stopped AP scan as end of AP map has been reached
+T668C 000:245.440   AP[0]: AHB-AP (IDR: 0x04770031)
+T668C 000:245.454   Iterating through AP map to find AHB-AP to use
+T668C 000:246.127   AP[0]: Core found
+T668C 000:246.145   AP[0]: AHB-AP ROM base: 0xE00FF000
+T668C 000:246.508   CPUID register: 0x410CC601. Implementer code: 0x41 (ARM)
+T668C 000:246.526   Found Cortex-M0 r0p1, Little endian.
+T668C 000:347.700   Identified core does not match configuration. (Found: Cortex-M0, Configured: Cortex-M4)
+T668C 000:348.183   -- Max. mem block: 0x00010C40
+T668C 000:348.387   CPU_ReadMem(4 bytes @ 0xE000EDF0)
+T668C 000:348.766   CPU_ReadMem(4 bytes @ 0xE0002000)
+T668C 000:349.134   FPUnit: 4 code (BP) slots and 0 literal slots
+T668C 000:349.205   CPU_ReadMem(4 bytes @ 0xE000EDFC)
+T668C 000:349.530   CPU_WriteMem(4 bytes @ 0xE000EDFC)
+T668C 000:349.936   CPU_ReadMem(4 bytes @ 0xE0001000)
+T668C 000:350.335   CPU_WriteMem(4 bytes @ 0xE0001000)
+T668C 000:350.714   CoreSight components:
+T668C 000:350.736   ROMTbl[0] @ E00FF000
+T668C 000:350.750   CPU_ReadMem(64 bytes @ 0xE00FF000)
+T668C 000:351.406   CPU_ReadMem(32 bytes @ 0xE000EFE0)
+T668C 000:351.873   ROMTbl[0][0]: E000E000, CID: B105E00D, PID: 000BB008 SCS
+T668C 000:351.894   CPU_ReadMem(32 bytes @ 0xE0001FE0)
+T668C 000:352.346   ROMTbl[0][1]: E0001000, CID: B105E00D, PID: 000BB00A DWT
+T668C 000:352.368   CPU_ReadMem(32 bytes @ 0xE0002FE0)
+T668C 000:352.839   ROMTbl[0][2]: E0002000, CID: B105E00D, PID: 000BB00B FPB
+T668C 000:352.903   CPU is running
+T668C 000:352.920   CPU_WriteMem(4 bytes @ 0xE000EDF0)
+T668C 000:353.259   CPU is running
+T668C 000:353.280   CPU_WriteMem(4 bytes @ 0xE000EDFC)
+T668C 000:353.621   Reset: Halt core after reset via DEMCR.VC_CORERESET.
+T668C 000:354.119   Reset: Reset device via AIRCR.SYSRESETREQ.
+T668C 000:354.141   CPU is running
+T668C 000:354.156   CPU_WriteMem(4 bytes @ 0xE000ED0C)
+T668C 000:406.847   CPU_ReadMem(4 bytes @ 0xE000EDF0)
+T668C 000:407.316   Reset: SYSRESETREQ has confused core.
+T668C 000:407.922   Found SW-DP with ID 0x0BC11477
+T668C 000:409.689   DPIDR: 0x0BC11477
+T668C 000:409.707   AP map detection skipped. Manually configured AP map found.
+T668C 000:409.721   AP[0]: AHB-AP (IDR: Not set)
+T668C 000:410.443   AP[0]: Core found
+T668C 000:410.460   AP[0]: AHB-AP ROM base: 0xE00FF000
+T668C 000:410.836   CPUID register: 0x410CC601. Implementer code: 0x41 (ARM)
+T668C 000:410.853   Found Cortex-M0 r0p1, Little endian.
+T668C 000:511.088   Reset: Using fallback: Reset pin.
+T668C 000:511.212   CPU is running
+T668C 000:511.286   CPU_WriteMem(4 bytes @ 0xE000EDF0)
+T668C 000:511.680   CPU is running
+T668C 000:511.698   CPU_WriteMem(4 bytes @ 0xE000EDFC)
+T668C 000:512.056   Reset: Halt core after reset via DEMCR.VC_CORERESET.
+T668C 000:512.074   Reset: Reset device via reset pin
+T668C 000:635.075   T-bit of XPSR is 0 but should be 1. Changed to 1.
+T668C 000:635.115   CPU_WriteMem(4 bytes @ 0xE000EDFC)
+T668C 000:641.178   CPU_ReadMem(4 bytes @ 0xE000EDF0)
+T668C 000:641.636   CPU_WriteMem(4 bytes @ 0xE0002000)
+T668C 000:641.887   CPU_ReadMem(4 bytes @ 0xE000EDFC)
+T668C 000:642.177   CPU_ReadMem(4 bytes @ 0xE0001000)
+T668C 000:642.486   CPU_WriteMem(4 bytes @ 0xE0001000)
+T668C 000:642.770 - 405.909ms
+T668C 000:642.792 JLINK_GetId()
+T668C 000:643.015 - 0.230ms returns 0x0BC11477
+T668C 000:650.790 JLINK_GetFirmwareString(...)
+T668C 000:650.817 - 0.031ms
+T668C 004:453.098 JLINK_Close()
+T668C 004:453.417   CPU_ReadMem(4 bytes @ 0xE0001000)
+T668C 004:453.705   CPU_WriteMem(4 bytes @ 0xE0001000)
+T668C 004:454.020   CPU_WriteMem(4 bytes @ 0xE0001004)
+T668C 004:469.481 - 16.412ms
+T668C 004:469.519   
+T668C 004:469.531   Closed

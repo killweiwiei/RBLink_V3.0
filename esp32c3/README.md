@@ -30,6 +30,12 @@ transaction and may transfer an IDLE frame when it only needs to poll.
   `4 log`; `0xFF` is an idle poll.
 - Control operations `0x01 PING` and `0x02 GET_INFO` terminate locally on ESP,
   allowing the PC to verify Wi-Fi and protocol health without STM32 traffic.
+- ESP firmware 0.2.2 reduces the TCP service-loop wait from 20 ms to 1 ms.
+  The SPI response queue cannot wake the socket `select()` call, so this removes
+  nearly 19 ms of avoidable latency from each sequential CMSIS-DAP transaction.
+- Wi-Fi modem sleep is disabled because the debug probe is externally powered,
+  and accepted debug sockets enable `TCP_NODELAY`. This avoids radio wake and
+  TCP coalescing delays on sequential target-access and flash commands.
 - The ESP runs in AP+STA mode. Its WPA2 SoftAP is named `RBlink-xxxxxx`; saved
   router credentials are loaded from NVS and reconnect automatically. TCP port
   `3240` is reachable through either interface. Only one PC client is allowed.

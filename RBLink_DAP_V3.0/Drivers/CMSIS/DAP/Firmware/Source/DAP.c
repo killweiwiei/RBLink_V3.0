@@ -250,12 +250,16 @@ static uint32_t DAP_Connect(const uint8_t *request, uint8_t *response) {
   switch (port) {
 #if (DAP_SWD != 0)
     case DAP_PORT_SWD:
+      /* An identical Connect can be retried after a lost USB/WiFi response.
+         Keep the existing pin state, including an explicitly held nRESET. */
+      if (DAP_Data.debug_port == DAP_PORT_SWD) break;
       DAP_Data.debug_port = DAP_PORT_SWD;
       PORT_SWD_SETUP();
       break;
 #endif
 #if (DAP_JTAG != 0)
     case DAP_PORT_JTAG:
+      if (DAP_Data.debug_port == DAP_PORT_JTAG) break;
       DAP_Data.debug_port = DAP_PORT_JTAG;
       PORT_JTAG_SETUP();
       break;

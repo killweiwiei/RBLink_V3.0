@@ -3,9 +3,13 @@
 
 #include <string.h>
 #include "rblink_board.h"
+#include "rblink_version.h"
 
 #define CPU_CLOCK                    168000000U
-#define IO_PORT_WRITE_CYCLES         2U
+/* Calibrated for the direct BSRR GPIO path on STM32F407 @ 168 MHz. The CMSIS
+   default of 2 underestimates the GPIO/inlined-call overhead and turns an
+   8 MHz request into roughly 5–6 MHz on the wire. */
+#define IO_PORT_WRITE_CYCLES         5U
 #define DAP_SWD                      1
 #define DAP_JTAG                     1
 #define DAP_JTAG_DEV_CNT             8U
@@ -13,9 +17,11 @@
 #define DAP_DEFAULT_SWJ_CLOCK        5000000U
 #define DAP_PACKET_SIZE              64U
 #define DAP_PACKET_COUNT             1U
-#define SWO_UART                     0
+#define SWO_UART                     1
 #define SWO_UART_DRIVER              0
-#define SWO_UART_MAX_BAUDRATE        10000000U
+/* PD9 is USART3_RX on APB1 (42 MHz). Oversampling by 8 limits reliable NRZ
+   capture to PCLK1 / 8. The implementation returns the actual divider rate. */
+#define SWO_UART_MAX_BAUDRATE        5250000U
 #define SWO_MANCHESTER               0
 #define SWO_BUFFER_SIZE              4096U
 #define SWO_STREAM                   0
@@ -53,7 +59,7 @@ __STATIC_INLINE uint8_t DAP_GetTargetDeviceVendorString(char *str) { (void)str; 
 __STATIC_INLINE uint8_t DAP_GetTargetDeviceNameString(char *str) { (void)str; return 0U; }
 __STATIC_INLINE uint8_t DAP_GetTargetBoardVendorString(char *str) { (void)str; return 0U; }
 __STATIC_INLINE uint8_t DAP_GetTargetBoardNameString(char *str) { (void)str; return 0U; }
-__STATIC_INLINE uint8_t DAP_GetProductFirmwareVersionString(char *str) { return rb_copy_string(str, "V3.0.05"); }
+__STATIC_INLINE uint8_t DAP_GetProductFirmwareVersionString(char *str) { return rb_copy_string(str, RBLINK_FIRMWARE_STRING); }
 
 __STATIC_FORCEINLINE void rb_set(GPIO_TypeDef *p, uint32_t n) { p->BSRR = n; }
 __STATIC_FORCEINLINE void rb_clr(GPIO_TypeDef *p, uint32_t n) { p->BSRR = n << 16U; }
@@ -87,11 +93,14 @@ __STATIC_INLINE void PORT_JTAG_SETUP(void) { rb_swdio_drive_enable(); RB_DAP_Ena
 __STATIC_INLINE void PORT_SWD_SETUP(void)  { rb_swdio_drive_enable(); RB_DAP_Enable(1U); }
 __STATIC_INLINE void PORT_OFF(void)
 {
+  /* PD8 drives an inverting NMOS: low releases target nRESET, not asserts it.
+     Release a reset explicitly held by the host even if it disconnects early. */
+  rb_clr(RB_NRESET_PORT, RB_NRESET_PIN);
+  __DSB();
   /* Leave the JTAG/SWD translator enabled as required by the RBLink V3
      hardware contract. Only release the bidirectional SWDIO driver here. */
   RB_DAP_Enable(1U);
   rb_swdio_drive_release();
-  rb_clr(RB_NRESET_PORT, RB_NRESET_PIN);
 }
 
 __STATIC_FORCEINLINE uint32_t PIN_SWCLK_TCK_IN(void) { return (RB_SWCLK_PORT->ODR & RB_SWCLK_PIN) != 0U; }
@@ -125,6 +134,14 @@ __STATIC_INLINE void DAP_SETUP(void)
   DWT->CYCCNT = 0U;
   DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 }
-__STATIC_INLINE uint32_t RESET_TARGET(void) { return 0U; }
+__STATIC_INLINE uint32_t RESET_TARGET(void)
+{
+  volatile uint32_t delay;
+  PIN_nRESET_OUT(0U);
+  for (delay = 0U; delay < 168000U; ++delay) { __NOP(); }
+  PIN_nRESET_OUT(1U);
+  for (delay = 0U; delay < 168000U; ++delay) { __NOP(); }
+  return 1U;
+}
 
 #endif

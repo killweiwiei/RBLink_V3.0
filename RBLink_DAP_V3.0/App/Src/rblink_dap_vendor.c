@@ -7,6 +7,7 @@ uint32_t DAP_ProcessVendorCommand(const uint8_t *request, uint8_t *response)
   if ((command == ID_RBLINK_SPI) || (command == ID_RBLINK_I2C) ||
       (command == ID_RBLINK_CAN) || (command == ID_RBLINK_POWER) ||
       (command == ID_RBLINK_WIFI) ||
+      (command == ID_RBLINK_STORAGE) ||
       (command == ID_RBLINK_INFO)) {
     return rblink_vendor_process(command, &request[1], response);
   }

@@ -17,6 +17,7 @@
 #include "freertos/timers.h"
 #include "lwip/inet.h"
 #include "lwip/sockets.h"
+#include "lwip/tcp.h"
 #include "nvs_flash.h"
 
 #include "rblink_link_protocol.h"
@@ -276,7 +277,7 @@ static bool rblink_make_local_control_response(const rblink_frame_t *request,
     } else if (request->payload[0] == RBLINK_CONTROL_GET_INFO) {
         uint8_t info[] = {
             RBLINK_CONTROL_GET_INFO, 0U, RBLINK_PROTOCOL_VERSION,
-            0U, 2U, 1U, /* ESP firmware 0.2.1: UDP LAN discovery */
+            0U, 2U, 2U, /* ESP firmware 0.2.2: low-latency TCP/SPI service */
             0x3FU, 0U,  /* AP, SPI, TCP, STA, STM32 provision, AP web */
             0U, 0U, 0U, 0U, /* TCP frames queued to SPI */
             0U, 0U, 0U, 0U, /* TCP frames transmitted over SPI */
@@ -329,7 +330,11 @@ static void rblink_tcp_task(void *argument)
 
     for (;;) {
         fd_set read_fds;
-        struct timeval timeout = {.tv_sec = 0, .tv_usec = 20000};
+        /* The SPI response queue cannot wake select(). A 20 ms timeout added
+         * up to 20 ms to every CMSIS-DAP request, which made target connect,
+         * register access and FLM programming unnecessarily slow over Wi-Fi.
+         * Poll at 1 ms; select still wakes immediately for incoming TCP data. */
+        struct timeval timeout = {.tv_sec = 0, .tv_usec = 1000};
         int max_fd = server_fd;
 
         FD_ZERO(&read_fds);
@@ -349,6 +354,7 @@ static void rblink_tcp_task(void *argument)
             int new_client = accept(server_fd, NULL, NULL);
             if (new_client >= 0) {
                 const struct timeval send_timeout = {.tv_sec = 2, .tv_usec = 0};
+                const int no_delay = 1;
                 if ((client_fd >= 0) || s_web_exchange_active) {
                     /* Keep the active debugging session stable. A second PC
                      * must retry after the current owner disconnects. */
@@ -357,6 +363,12 @@ static void rblink_tcp_task(void *argument)
                     new_client = -1;
                 }
                 if (new_client >= 0) {
+                    /* Every RBLink response is consumed before the next DAP
+                     * request is issued. Do not hold a 512-byte response for
+                     * TCP coalescing; that delay directly reduces debug and
+                     * flash-programming throughput. */
+                    setsockopt(new_client, IPPROTO_TCP, TCP_NODELAY, &no_delay,
+                               sizeof(no_delay));
                     setsockopt(new_client, SOL_SOCKET, SO_SNDTIMEO, &send_timeout,
                                sizeof(send_timeout));
                     xQueueReset(s_net_to_stm32);

@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RBLink Web</title>
+<style>
+  :root{color-scheme:dark;font:15px system-ui;background:#071317;color:#dff}
+  body{margin:0;padding:20px}main{max-width:760px;margin:auto}.card{background:#10242a;
+  padding:20px;margin:14px 0;border:1px solid #247384;border-radius:14px}.logo{display:block;
+  width:72px;height:72px;margin:auto;border-radius:18px}h1,h2{margin:10px 0}h1{text-align:center}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px}
+  input,select,button{box-sizing:border-box;width:100%;padding:11px;margin:5px 0;border-radius:7px;
+  border:1px solid #39717c;background:#071317;color:#fff}button{background:#008fa4;border:0;
+  font-weight:700;cursor:pointer}button.secondary{background:#31525b}button:disabled{opacity:.45}
+  small{color:#8caeb5}#state,#debugState,#log{white-space:pre-wrap}#log{min-height:130px;
+  max-height:300px;overflow:auto;background:#061014;padding:12px;border-radius:8px;font:13px ui-monospace,monospace}
+  .ok{color:#62e6a7}.bad{color:#ff8d8d}
+  .head{display:flex;align-items:center;justify-content:center;position:relative}.link{position:absolute;
+  right:0;top:12px;display:flex;align-items:center;gap:7px;color:#ff8d8d}.dot{width:10px;height:10px;
+  border-radius:50%;background:#e34f4f;box-shadow:0 0 8px currentColor}
+</style>
+<main>
+  <div class="head"><div><img class="logo" src="/logo.png" alt="RB"><h1>RBLink Web</h1></div>
+    <div class="link"><span id="linkDot" class="dot"></span><span id="linkText">已断开</span></div></div>
+  <section class="card"><h2>网络</h2><p id="state">正在读取状态…</p>
+    <form id="wifiForm"><label>Wi-Fi 名称（SSID）<input id="ssid" maxlength="32" required></label>
+      <label>Wi-Fi 密码<input id="password" type="password" maxlength="63"></label>
+      <button>保存并连接</button></form><button id="clear" class="secondary">清除配置</button>
+    <small>配网写操作仅允许从 RBLink 热点访问。</small></section>
+  <section class="card"><h2>无线 SWD 调试</h2><p id="debugState">尚未连接</p>
+    <div class="grid"><label>SWD 时钟<select id="clock"><option value="100000">100 kHz</option>
+      <option value="1000000" selected>1 MHz</option><option value="4000000">4 MHz</option></select></label>
+      <label>读取地址<input id="address" value="0xE000ED00"></label>
+      <label>读取长度<input id="length" type="number" min="4" max="64" step="4" value="16"></label></div>
+    <h3>目标电源</h3><div class="grid"><label>目标电压（暂算）<input id="voltage" type="number" min="0.5" max="5" step="0.01" value="3.30"></label>
+      <label>DAC 校准码（0–4095）<input id="dac" type="number" min="0" max="4095" value="1547"></label>
+      <button id="powerStatus">读取电源状态</button><button id="powerOn">设置电压（持续供电）</button></div>
+    <small>DAC/FB 为反向控制；默认码 1547 暂按 DAC 0→5.0 V、4095→0.5 V 计算。</small>
+    <h3>SWD</h3>
+    <div class="grid"><button id="probe">检测 STM32</button><button id="connect">连接目标 SWD</button>
+      <button id="read">读取内存</button><button id="halt">暂停内核</button>
+      <button id="run">继续运行</button><button id="disconnect" class="secondary">断开 SWD</button></div>
+    <pre id="log"></pre><small>当前 Web 调试只提供只读检查和运行控制，不执行 Flash 擦写。</small>
+  </section>
+</main>
+<script>
+const $=s=>document.querySelector(s),FRAME=512,MAGIC=0x4b4c4252,CH_DAP=1,CH_VENDOR=3,RESP=1;
+let ws=null,seq=1,pending=null,swd=false;
+function setLink(online,text=online?'无线已连接':'已断开'){const dot=$('#linkDot'),label=$('#linkText');label.textContent=text;
+  label.style.color=online?'#62e6a7':'#ff8d8d';dot.style.background=online?'#29c77d':'#e34f4f'}
+function crc32(a){let c=0xffffffff;for(const b of a){c^=b;for(let i=0;i<8;i++)c=(c>>>1)^((c&1)?0xedb88320:0)}return(~c)>>>0}
+function frame(channel,payload,n){const b=new Uint8Array(FRAME),v=new DataView(b.buffer);v.setUint32(0,MAGIC,true);
+  b[4]=1;b[5]=channel;v.setUint32(8,n,true);v.setUint16(12,payload.length,true);b.set(payload,20);
+  v.setUint32(16,crc32(b),true);return b}
+function parse(buffer){const b=new Uint8Array(buffer),v=new DataView(buffer);if(b.length!==FRAME||v.getUint32(0,true)!==MAGIC||b[4]!==1)throw Error('RBLink帧头错误');
+  const expected=v.getUint32(16,true),copy=b.slice();new DataView(copy.buffer).setUint32(16,0,true);
+  if(crc32(copy)!==expected)throw Error('RBLink CRC错误');const len=v.getUint16(12,true);if(len>492)throw Error('RBLink长度错误');
+  return{channel:b[5],flags:b[6],sequence:v.getUint32(8,true),payload:b.slice(20,20+len)}}
+function log(s,kind=''){const e=$('#log'),t=new Date().toLocaleTimeString();e.textContent+=`[${t}] ${s}\n`;e.scrollTop=e.scrollHeight;
+  if(kind)$('#debugState').className=kind}
+function openWs(){if(ws&&ws.readyState===WebSocket.OPEN)return Promise.resolve();return new Promise((resolve,reject)=>{
+  ws=new WebSocket(`ws://${location.host}/ws/debug`);ws.binaryType='arraybuffer';ws.onopen=()=>{setLink(true);resolve()};
+  ws.onerror=()=>{setLink(false);reject(Error('WebSocket连接失败'))};
+  ws.onclose=()=>{if(pending){pending.reject(Error('WebSocket已断开'));pending=null}ws=null;swd=false;setLink(false);$('#debugState').textContent='已断开';$('#debugState').className='bad'};
+  ws.onmessage=e=>{if(typeof e.data==='string'){if(pending){pending.reject(Error(e.data));pending=null}return}
+    try{const f=parse(e.data);if(pending&&f.sequence===pending.sequence){const p=pending;pending=null;p.resolve(f)}}catch(err){if(pending){pending.reject(err);pending=null}}};})}
+async function exchange(channel,payload){await openWs();if(pending)throw Error('上一条命令尚未完成');const n=seq++;
+  return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{if(pending&&pending.sequence===n){pending=null;reject(Error('无线命令超时'))}},3500);
+    pending={sequence:n,resolve:f=>{clearTimeout(timer);if(f.channel!==channel||!(f.flags&RESP))reject(Error('响应路由错误'));else resolve(f.payload)},
+      reject:e=>{clearTimeout(timer);reject(e)}};ws.send(frame(channel,payload,n))})}
+async function dap(a){const r=await exchange(CH_DAP,new Uint8Array(a));if(r.length<2||r[0]!==a[0])throw Error(`DAP命令0x${a[0].toString(16)}响应错误`);return r}
+async function checked(a){const r=await dap(a);if(r[1]!==0)throw Error(`DAP命令0x${a[0].toString(16)}失败：${hex(r)}`)}
+async function vendor(command,action,data=[]){const r=await exchange(CH_VENDOR,new Uint8Array([command,data.length+1,action,...data]));
+  if(r.length<3||r[0]!==command)throw Error('RBLink私有命令响应错误');if(r[1]!==0)throw Error(`RBLink设备错误0x${r[1].toString(16)}`);
+  if(r.length<3+r[2])throw Error('RBLink私有命令长度错误');return r.slice(3,3+r[2])}
+function u32(n){return[n&255,(n>>>8)&255,(n>>>16)&255,(n>>>24)&255]}
+function get32(a,o=0){return(new DataView(a.buffer,a.byteOffset,a.byteLength)).getUint32(o,true)}
+function hex(a){return[...a].map(x=>x.toString(16).padStart(2,'0')).join(' ').toUpperCase()}
+function ntcC(adc){if(adc<=0||adc>=4095)return NaN;const r=10000*adc/(4095-adc);return 1/(1/298.15+Math.log(r/10000)/3950)-273.15}
+function dacV(code){return 5-4.5*code/4095}
+async function transfer(code,value){const q=[5,0,1,code];if(value!==undefined)q.push(...u32(value));const r=await dap(q);
+  if(r.length<3||r[1]!==1||(r[2]&7)!==1)throw Error(`SWD传输失败，ACK=0x${(r[2]&7).toString(16)}`);return value===undefined?get32(r,3):0}
+async function swj(bits,data){await checked([0x12,bits,...data])}
+async function connectSwd(){let r=await dap([2,1]);if(r[1]!==1)throw Error('无法选择SWD端口');
+  await checked([4,0,100,0,0,0]);await checked([0x11,...u32(Number($('#clock').value))]);await checked([0x13,0]);
+  await swj(64,new Array(8).fill(255));await swj(16,[0x9e,0xe7]);await swj(64,new Array(8).fill(255));await swj(8,[0]);
+  const id=await transfer(0x02);await transfer(0x00,0x1e);await transfer(0x04,0x50000000);
+  let powered=false;for(let i=0;i<100;i++){if(((await transfer(0x06))&0xa0000000)===0xa0000000){powered=true;break}}
+  if(!powered)throw Error('Debug Port上电确认超时');await transfer(0x08,0);swd=true;return id}
+async function prepare(address){await transfer(0x08,0);await transfer(0x01,0x23000052);await transfer(0x05,address)}
+async function readMemory(address,length){const out=[];for(let offset=0;offset<length;){const words=Math.min(14,(length-offset)/4);
+  await prepare(address+offset);const r=await dap([6,0,words&255,words>>>8,0x0f]);if(r.length<4+words*4||r[1]!==words||r[2]!==0||(r[3]&7)!==1)throw Error('SWD块读取失败');
+  out.push(...r.slice(4,4+words*4));offset+=words*4}return new Uint8Array(out)}
+async function write32(address,value){await prepare(address);await transfer(0x0d,value)}
+async function runAction(name,fn){try{$('#debugState').textContent=`正在${name}…`;const r=await fn();$('#debugState').textContent=`${name}成功`;
+  $('#debugState').className='ok';return r}catch(e){$('#debugState').textContent=`${name}失败：${e.message}`;$('#debugState').className='bad';log(`${name}失败：${e.message}`,'bad');throw e}}
+async function status(){try{const j=await(await fetch('/api/status')).json();$('#state').textContent=`热点：${j.ap_ssid}\n路由器：${j.configured?j.sta_ssid:'未配置'}\n连接：${j.connected?j.ip:'未连接'}` }catch(e){$('#state').textContent=e.message}}
+$('#wifiForm').onsubmit=async e=>{e.preventDefault();$('#state').textContent='正在保存并连接…';const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid:$('#ssid').value,password:$('#password').value})});$('#state').textContent=await r.text();setTimeout(status,2500)};
+$('#clear').onclick=async()=>{await fetch('/api/config',{method:'DELETE'});status()};
+$('#probe').onclick=()=>runAction('检测STM32',async()=>{const r=await dap([0,4]);const n=r[1],ver=new TextDecoder().decode(r.slice(2,2+n)).replace(/\0/g,'');log(`STM32 CMSIS-DAP ${ver}`)}).catch(()=>{});
+$('#powerStatus').onclick=()=>runAction('读取电源状态',async()=>{const d=await vendor(0x8e,1);if(d.length!==9)throw Error('电源状态长度错误');
+  const code=d[7]|d[8]<<8,temp=ntcC(d[5]|d[6]<<8);$('#dac').value=code;$('#voltage').value=dacV(code).toFixed(2);
+  log(`目标电源=${d[0]?'开启':'关闭'} 设定≈${dacV(code).toFixed(3)} V VREF_ADC=${d[1]|d[2]<<8} VOUT_ADC=${d[3]|d[4]<<8} 温度=${temp.toFixed(1)} ℃ DAC=${code}`)}).catch(()=>{});
+$('#powerOn').onclick=()=>runAction('开启目标电源',async()=>{const d=Number($('#dac').value);if(!Number.isInteger(d)||d<0||d>4095)throw Error('DAC原始码无效');
+  await vendor(0x8e,0,[1,d&255,d>>>8]);log(`目标电源已开启，设定≈${dacV(d).toFixed(3)} V，DAC=${d}`)}).catch(()=>{});
+$('#connect').onclick=()=>runAction('连接SWD',async()=>{const id=await connectSwd();log(`SWD DP IDCODE = 0x${id.toString(16).padStart(8,'0').toUpperCase()}`)}).catch(()=>{});
+$('#read').onclick=()=>runAction('读取内存',async()=>{if(!swd)throw Error('请先连接SWD');const address=Number($('#address').value),length=Number($('#length').value);
+  if(!Number.isInteger(address)||!Number.isInteger(length)||length<4||length>64||length%4)throw Error('地址或长度无效');const data=await readMemory(address,length);log(`0x${address.toString(16).padStart(8,'0').toUpperCase()}: ${hex(data)}`)}).catch(()=>{});
+$('#halt').onclick=()=>runAction('暂停内核',async()=>{if(!swd)throw Error('请先连接SWD');await write32(0xe000edf0,0xa05f0003);log('目标内核已暂停')}).catch(()=>{});
+$('#run').onclick=()=>runAction('继续运行',async()=>{if(!swd)throw Error('请先连接SWD');await write32(0xe000edf0,0xa05f0001);log('目标内核继续运行')}).catch(()=>{});
+$('#disconnect').onclick=()=>runAction('断开SWD',async()=>{if(swd)await checked([3]);swd=false;if(ws)ws.close();log('SWD已断开')}).catch(()=>{});
+$('#voltage').oninput=()=>{const v=Math.max(.5,Math.min(5,Number($('#voltage').value)||.5));$('#dac').value=Math.round((5-v)/4.5*4095)};
+$('#dac').oninput=()=>{const d=Math.max(0,Math.min(4095,Number($('#dac').value)||0));$('#voltage').value=dacV(d).toFixed(2)};
+status();openWs().then(()=>dap([0,4])).then(r=>{if(r[1]===0)throw Error('STM32未响应');setLink(true)}).catch(()=>setLink(false));
+setInterval(status,5000);setInterval(async()=>{if(!ws||ws.readyState!==WebSocket.OPEN||pending)return;
+  try{const r=await dap([0,4]);if(r[1]===0)throw Error('STM32未响应');setLink(true)}catch(e){setLink(false);if(ws)ws.close()}},2000);
+</script>
+</html>

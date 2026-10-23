@@ -9,6 +9,7 @@
 #define RBLINK_VENDOR_H
 
 #include <stdint.h>
+#include "rblink_version.h"
 
 #define ID_RBLINK_SPI 0x85U
 #define ID_RBLINK_I2C 0x86U
@@ -19,10 +20,7 @@
 #define ID_RBLINK_INFO 0x8FU
 
 #define RBLINK_PROTOCOL_MAJOR 1U
-#define RBLINK_PROTOCOL_MINOR 5U
-#define RBLINK_FIRMWARE_MAJOR 3U
-#define RBLINK_FIRMWARE_MINOR 0U
-#define RBLINK_FIRMWARE_PATCH 5U
+#define RBLINK_PROTOCOL_MINOR 10U
 #define RBLINK_BOARD_REVISION 0U /* Set after the first PCB revision is frozen. */
 #define RBLINK_CAP_SPI   (1U << 0)
 #define RBLINK_CAP_I2C   (1U << 1)
@@ -30,6 +28,9 @@
 #define RBLINK_CAP_POWER (1U << 3)
 #define RBLINK_CAP_WIFI  (1U << 4)
 #define RBLINK_CAP_STORAGE (1U << 6)
+#define RBLINK_CAP_I2C_SLAVE (1U << 7)
+#define RBLINK_CAP_I2C_TCU (1U << 8)
+#define RBLINK_CAP_I2C_MAP (1U << 9)
 
 /* DAP_ProcessVendorCommand return format:
  * upper 16 bits = consumed request bytes, lower 16 bits = response bytes.

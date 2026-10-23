@@ -17,8 +17,8 @@
 #define RB_UART_TX_PIN         GPIO_PIN_9       /* USART1_TX */
 #define RB_UART_RX_PIN         GPIO_PIN_10      /* USART1_RX */
 #define RB_DEBUG_PORT          GPIOB
-#define RB_DEBUG_TX_PIN        GPIO_PIN_10      /* USART3_TX */
-#define RB_DEBUG_RX_PIN        GPIO_PIN_11      /* USART3_RX */
+#define RB_DEBUG_TX_PIN        GPIO_PIN_10      /* USART3_TX, final V3 debug UART */
+#define RB_DEBUG_RX_PIN        GPIO_PIN_11      /* USART3_RX, final V3 debug UART */
 
 /* DAP: separate SWDIO output/input removes GPIO mode-switch delay. */
 #define RB_NRESET_PORT         GPIOD
@@ -66,11 +66,15 @@
 #define RB_ESP_READY_PORT      GPIOB
 #define RB_ESP_READY_PIN       GPIO_PIN_7
 
-/* External NOR Flash on SPI3, CS is PA15 in the final netlist. */
+/* External SPI NOR. V3 documents disagree about PC10/PC12 signal order, so
+   the driver probes native SPI3 first and then the swapped software-SPI map. */
 #define RB_FLASH_NSS_PORT      GPIOA
 #define RB_FLASH_NSS_PIN       GPIO_PIN_15
 #define RB_FLASH_SPI_PORT      GPIOC
-#define RB_FLASH_SPI_PINS      (GPIO_PIN_10 | GPIO_PIN_11 | GPIO_PIN_12)
+#define RB_FLASH_MOSI_PIN      GPIO_PIN_10
+#define RB_FLASH_MISO_PIN      GPIO_PIN_11
+#define RB_FLASH_SCK_PIN       GPIO_PIN_12
+#define RB_FLASH_SPI_PINS      (RB_FLASH_MOSI_PIN | RB_FLASH_MISO_PIN | RB_FLASH_SCK_PIN)
 
 /* Target/power interface enables are active high and have 100k pull-downs. */
 #define RB_BOOST_EN_PORT       GPIOD

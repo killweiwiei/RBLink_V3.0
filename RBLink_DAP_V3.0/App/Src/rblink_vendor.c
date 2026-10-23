@@ -61,8 +61,9 @@ uint32_t rblink_vendor_process(uint8_t command,
         response[3] = RBLINK_PROTOCOL_MAJOR;
         response[4] = RBLINK_PROTOCOL_MINOR;
         response[5] = RBLINK_CAP_SPI | RBLINK_CAP_I2C | RBLINK_CAP_CAN |
-                      RBLINK_CAP_POWER | RBLINK_CAP_WIFI | RBLINK_CAP_STORAGE;
-        response[6] = 0U;
+                      RBLINK_CAP_POWER | RBLINK_CAP_WIFI | RBLINK_CAP_STORAGE |
+                      RBLINK_CAP_I2C_SLAVE;
+        response[6] = (uint8_t)((RBLINK_CAP_I2C_TCU | RBLINK_CAP_I2C_MAP) >> 8U);
         response[7] = RBLINK_FIRMWARE_MAJOR;
         response[8] = RBLINK_FIRMWARE_MINOR;
         response[9] = RBLINK_FIRMWARE_PATCH;
@@ -76,7 +77,8 @@ uint32_t rblink_vendor_process(uint8_t command,
     }
     if ((request[1] != RBLINK_ACTION_CONFIG) &&
         (request[1] != RBLINK_ACTION_TRANSFER) &&
-        (request[1] != RBLINK_ACTION_CLOSE)) {
+        (request[1] != RBLINK_ACTION_CLOSE) &&
+        !((command == ID_RBLINK_I2C) && (request[1] >= 6U) && (request[1] <= 13U))) {
         response[1] = RBLINK_STATUS_BAD_ACTION;
         response[2] = 0U;
         return (((uint32_t)request_len + 1U) << 16) | 3U;

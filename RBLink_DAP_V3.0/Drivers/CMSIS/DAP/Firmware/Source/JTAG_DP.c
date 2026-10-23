@@ -27,6 +27,7 @@
 
 #include "DAP_config.h"
 #include "DAP.h"
+#include "rblink_debug.h"
 
 
 // JTAG Macros
@@ -53,6 +54,17 @@
   PIN_TCK_CLR();                        \
   PIN_DELAY();                          \
   tdo = PIN_TDO_IN();                   \
+  PIN_TCK_SET();                        \
+  PIN_DELAY()
+
+/* Diagnostic IDCODE sampling only. PD10 is the production TDO input; PD9 is
+   sampled at the same clock edge so an assembled-board routing mismatch can
+   be identified without changing the normal pin map or printing in-band. */
+#define JTAG_CYCLE_TDO_DUAL(tdo,alt)     \
+  PIN_TCK_CLR();                        \
+  PIN_DELAY();                          \
+  tdo = PIN_TDO_IN();                   \
+  alt = (RB_SWO_PORT->IDR & RB_SWO_PIN) ? 1U : 0U; \
   PIN_TCK_SET();                        \
   PIN_DELAY()
 
@@ -127,7 +139,13 @@ static void JTAG_IR_##speed (uint32_t ir) {                                     
   for (n = DAP_Data.jtag_dev.ir_before[DAP_Data.jtag_dev.index]; n; n--) {      \
     JTAG_CYCLE_TCK();                       /* Bypass before data */            \
   }                                                                             \
-  for (n = DAP_Data.jtag_dev.ir_length[DAP_Data.jtag_dev.index] - 1U; n; n--) { \
+  n = DAP_Data.jtag_dev.ir_length[DAP_Data.jtag_dev.index];                    \
+  /* Arm 8-bit JTAG-DP opcodes are sign-extended forms of the standard       \
+     4-bit values, for example DPACC=0xFA and IDCODE=0xFE. */                  \
+  if ((n > 4U) && ((ir & 0x08U) != 0U)) {                                     \
+    ir |= ~0x0FU;                                                               \
+  }                                                                             \
+  for (--n; n; n--) {                                                           \
     JTAG_CYCLE_TDI(ir);                     /* Set IR bits (except last) */     \
     ir >>= 1;                                                                   \
   }                                                                             \
@@ -266,7 +284,9 @@ JTAG_TransferFunction(Slow)
 //   return: value read
 uint32_t JTAG_ReadIDCode (void) {
   uint32_t bit;
+  uint32_t bit_alt;
   uint32_t val;
+  uint32_t val_alt;
   uint32_t n;
 
   PIN_TMS_SET();
@@ -280,18 +300,24 @@ uint32_t JTAG_ReadIDCode (void) {
   }
 
   val = 0U;
+  val_alt = 0U;
   for (n = 31U; n; n--) {
-    JTAG_CYCLE_TDO(bit);                    /* Get D0..D30 */
+    JTAG_CYCLE_TDO_DUAL(bit, bit_alt);      /* Get D0..D30 */
     val  |= bit << 31;
     val >>= 1;
+    val_alt  |= bit_alt << 31;
+    val_alt >>= 1;
   }
   PIN_TMS_SET();
-  JTAG_CYCLE_TDO(bit);                      /* Get D31 & Exit1-DR */
+  JTAG_CYCLE_TDO_DUAL(bit, bit_alt);        /* Get D31 & Exit1-DR */
   val |= bit << 31;
+  val_alt |= bit_alt << 31;
 
   JTAG_CYCLE_TCK();                         /* Update-DR */
   PIN_TMS_CLR();
   JTAG_CYCLE_TCK();                         /* Idle */
+
+  RB_Debug_JTAGTrace(val, val_alt);
 
   return (val);
 }
@@ -359,11 +385,28 @@ void JTAG_IR (uint32_t ir) {
 //   data:    DATA[31:0]
 //   return:  ACK[2:0]
 uint8_t  JTAG_Transfer(uint32_t request, uint32_t *data) {
+#if (RBLINK_DEBUG_ENABLE != 0U)
+  uint8_t ack;
+  uint32_t trace_data = 0U;
+  uint32_t *scan_data = data;
+  if (((request & DAP_TRANSFER_RnW) != 0U) && (scan_data == NULL)) {
+    scan_data = &trace_data;
+  }
+  if (DAP_Data.fast_clock) {
+    ack = JTAG_TransferFast(request, scan_data);
+  } else {
+    ack = JTAG_TransferSlow(request, scan_data);
+  }
+  if (scan_data != NULL) trace_data = *scan_data;
+  RB_Debug_JTAGTransferTrace((uint8_t)request, ack, '1', trace_data);
+
+  return ack;
+#else
   if (DAP_Data.fast_clock) {
     return JTAG_TransferFast(request, data);
-  } else {
-    return JTAG_TransferSlow(request, data);
   }
+  return JTAG_TransferSlow(request, data);
+#endif
 }
 
 

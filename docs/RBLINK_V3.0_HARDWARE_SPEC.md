@@ -308,7 +308,7 @@ INA180输出 -> 硬件比较器（约3.0 V阈值） -> 故障锁存/开漏下拉
 ESP固件位于 `esp32c3/`。其中ESP_READY的定版语义是“ESP SPI从机DMA事务已经排队，可开始一次固定512字节传输”：事务准备后拉高、CS传输完成后拉低。它不是单纯的数据待取指示；STM32在每次传输前都必须等待该脚为高。
 | 外部NOR Flash | PC12 SCK、PC11 MISO、PC10 MOSI、PA15 FLASH_CS | SPI3，AF6；FLASH_CS为GPIO低有效 |
 | 目标I2C | PA8 SCL、PC9 SDA | I2C3，AF4 |
-| 目标PWM | PC6 PWM1、PC7 PWM2 | TIM8_CH1/CH2，AF3，经U12电平转换输出 |
+| 专用调试串口 | PB10 TX、PB11 RX | USART3，AF7，115200 8N1 |
 | CAN1 | PB8 RX、PB9 TX | AF9；接CA-IS2062VW逻辑侧，CAN改由独立CN1引出 |
 | VTREF检测 | PA2 ADC123_IN2 | 精密分压与RC后输入 |
 | 输出电压ADC | PA1 ADC123_IN1 | TARGET_POWER精密分压与RC后输入 |

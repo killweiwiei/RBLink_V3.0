@@ -24,10 +24,10 @@
 | USART3 | PB10 TX、PB11 RX | RBlink维护日志口 |
 | SPI1 | PB3 SCK、PB4 MISO、PB5 MOSI | STM32 Master，Mode 0；连接ESP；PB6手动CS、PB7 EXTI READY；RX/TX DMA |
 | SPI2 | PB13 SCK、PB14 MISO、PB15 MOSI | 目标SPI Master；PB12手动NSS；RX/TX DMA |
-| SPI3 | PC10 SCK、PC11 MISO、PC12 MOSI | 外部NOR Flash；PA15手动CS；RX/TX DMA |
+| SPI3 | PC10 SCK、PC11 MISO、PC12 MOSI | 仅用于兼容探测；若PCB按PC10 MOSI、PC12 SCK布线，驱动自动回退软件SPI；PA15手动CS |
 | I2C3 | PA8 SCL、PC9 SDA | 目标I2C Master，最高400 kHz；保留GPIO总线恢复能力 |
 | CAN1 | PB8 RX、PB9 TX | Classical CAN；具体bit timing运行时配置 |
-| TIM8 | PC6 CH1、PC7 CH2 | 两路目标PWM；暂时可只完成引脚和时钟配置 |
+| USART3 | PB10 TX、PB11 RX | 专用固件调试串口，115200 8N1 |
 
 USB中间件不要直接选择单一CDC类。最终设备需要CMSIS-DAP v2 Vendor/Bulk与CDC复合设备，后续由我接入复合USB描述符和端点调度；CubeMX只需要生成正确的USB OTG FS底层PCD/HAL。
 

@@ -8,11 +8,223 @@
 #define LT_BAD_LENGTH  0x01U
 #define LT_BAD_ACTION  0x02U
 #define LT_IO_ERROR    0x03U
+#define LT_BUSY        0x04U
 #define LT_TIMEOUT_MS  100U
 
 static SPI_HandleTypeDef hspi2;
 static I2C_HandleTypeDef hi2c3;
+#define RB_I2C_RX_SIZE 1024U
+#define RB_I2C_TX_SIZE 48U
+/* Single-producer/consumer ring; shared indices and counters are protected
+ * briefly while constructing a USB response. No USB operation runs in an IRQ. */
+static struct {
+    volatile uint8_t enabled, direction, active;
+    uint8_t address, filler, tx[RB_I2C_TX_SIZE], tx_length, tx_index;
+    uint8_t rx[RB_I2C_RX_SIZE];
+    volatile uint16_t head, tail, writes, reads;
+    volatile uint32_t received, supplied, dropped, errors;
+} i2c_slave;
+
+/* Upload into the inactive bank; only commit exposes a complete register map. */
+static struct {
+    uint8_t bank[2][256];
+    volatile uint8_t enabled, current, pointer, expect_address;
+    uint8_t staging, pending, address, filler;
+} i2c_map;
+
+#define TCU_ERR_LENGTH   0x01U
+#define TCU_ERR_DATA     0x02U
+#define TCU_ERR_BUS      0x04U
+#define TCU_ERR_SEQUENCE 0x08U
+#define TCU_ERR_TIMEOUT  0x10U
+#define TCU_ERR_GAP      0x20U
+#define TCU_ERR_IDLE     0x40U
+/* Application-owned one-shot test policy, separate from the generic bus API.
+ * State: 1=first write, 2=gap/await read, 3=done, 4=failed, 5=await STOP. */
+static struct {
+    volatile uint8_t enabled, role, state, n, rx_count, tx_count, writes, reads;
+    volatile uint32_t errors, raw_error, phase_tick;
+    uint32_t speed, start_tick, end_tick;
+    uint8_t rx[16], tx[16];
+} i2c_tcu;
+
+static uint8_t i2c_tcu_pattern(uint8_t index)
+{
+    return (uint8_t)(0xA5U ^ (37U * index));
+}
+
+static void i2c_tcu_finish(uint32_t errors)
+{
+    i2c_tcu.errors |= errors;
+    i2c_tcu.end_tick = HAL_GetTick();
+    i2c_tcu.state = (i2c_tcu.errors == 0U) ? 3U : 4U;
+    CLEAR_BIT(I2C3->CR2, I2C_CR2_ITEVTEN | I2C_CR2_ITBUFEN | I2C_CR2_ITERREN);
+    CLEAR_BIT(I2C3->CR1, I2C_CR1_ACK | I2C_CR1_PE);
+    i2c_slave.active = 0U;
+}
+
+static void i2c_slave_disable(void)
+{
+    HAL_NVIC_DisableIRQ(I2C3_EV_IRQn);
+    HAL_NVIC_DisableIRQ(I2C3_ER_IRQn);
+    if (hi2c3.Instance == I2C3) {
+        CLEAR_BIT(I2C3->CR2, I2C_CR2_ITEVTEN | I2C_CR2_ITBUFEN | I2C_CR2_ITERREN);
+        CLEAR_BIT(I2C3->CR1, I2C_CR1_ACK | I2C_CR1_PE);
+    }
+    i2c_slave.enabled = 0U;
+    i2c_slave.active = 0U;
+    HAL_NVIC_ClearPendingIRQ(I2C3_EV_IRQn);
+    HAL_NVIC_ClearPendingIRQ(I2C3_ER_IRQn);
+}
+
+static void i2c_slave_receive(void)
+{
+    uint8_t data = (uint8_t)I2C3->DR;
+    uint16_t next = (uint16_t)((i2c_slave.head + 1U) % RB_I2C_RX_SIZE);
+    if (i2c_map.enabled && i2c_map.expect_address) {
+        i2c_map.pointer = data;
+        i2c_map.expect_address = 0U;
+    }
+    if (i2c_tcu.enabled && (i2c_tcu.role == 1U)) {
+        if (i2c_tcu.rx_count < i2c_tcu.n) i2c_tcu.rx[i2c_tcu.rx_count] = data;
+        else i2c_tcu.errors |= TCU_ERR_LENGTH;
+        if (i2c_tcu.rx_count != 255U) ++i2c_tcu.rx_count;
+    }
+    ++i2c_slave.received;
+    if (next == i2c_slave.tail) ++i2c_slave.dropped;
+    else {
+        i2c_slave.rx[i2c_slave.head] = data;
+        i2c_slave.head = next;
+    }
+}
+
+static void i2c_slave_transmit(void)
+{
+    uint8_t data = i2c_slave.filler;
+    if (i2c_map.enabled) {
+        data = i2c_map.bank[i2c_map.current][i2c_map.pointer];
+        i2c_map.pointer = (uint8_t)(i2c_map.pointer + 1U);
+    } else if (i2c_slave.tx_index < i2c_slave.tx_length)
+        data = i2c_slave.tx[i2c_slave.tx_index++];
+    I2C3->DR = data;
+    ++i2c_slave.supplied;
+    if (i2c_tcu.enabled && (i2c_tcu.role == 1U)) {
+        if (i2c_tcu.tx_count < i2c_tcu.n) i2c_tcu.tx[i2c_tcu.tx_count] = data;
+        if (i2c_tcu.tx_count != 255U) ++i2c_tcu.tx_count;
+    }
+}
+
+/* Slave IRQs deliberately use the hardware flags directly: unknown-length
+ * writes terminate on STOP or repeated START, not on a HAL fixed buffer size.
+ * TX services BTF only after the initial byte, using clock stretching to avoid
+ * a speculative second byte remaining in DR after the master's final NACK. */
+void I2C3_EV_IRQHandler(void)
+{
+    uint32_t sr1, sr2;
+    if (!i2c_slave.enabled) return;
+    sr1 = I2C3->SR1;
+    if ((sr1 & (I2C_SR1_BERR | I2C_SR1_ARLO | I2C_SR1_AF |
+                I2C_SR1_OVR | I2C_SR1_TIMEOUT)) != 0U) {
+        I2C3_ER_IRQHandler();
+        return;
+    }
+    if ((sr1 & I2C_SR1_ADDR) != 0U) {
+        /* Drain a final receive byte before clearing ADDR at repeated START. */
+        if (i2c_slave.active && !i2c_slave.direction) {
+            if ((I2C3->SR1 & I2C_SR1_RXNE) != 0U) i2c_slave_receive();
+            if ((I2C3->SR1 & I2C_SR1_RXNE) != 0U) i2c_slave_receive();
+        }
+        sr2 = I2C3->SR2; /* SR1 then SR2 clears ADDR. */
+        if (i2c_tcu.enabled && (i2c_tcu.role == 1U)) {
+            uint8_t read = ((sr2 & I2C_SR2_TRA) != 0U) ? 1U : 0U;
+            /* A second ADDR before STOP is forbidden by the TCU protocol. */
+            if (i2c_slave.active ||
+                (!read && ((i2c_tcu.state != 1U) || (i2c_tcu.writes != 0U))) ||
+                (read && ((i2c_tcu.state != 2U) || (i2c_tcu.reads != 0U)))) {
+                i2c_tcu_finish(TCU_ERR_SEQUENCE); return;
+            }
+            if (read && ((uint32_t)(HAL_GetTick() - i2c_tcu.phase_tick) < 100U)) {
+                i2c_tcu_finish(TCU_ERR_GAP); return;
+            }
+            if (read) ++i2c_tcu.reads; else ++i2c_tcu.writes;
+        }
+        i2c_slave.direction = ((sr2 & I2C_SR2_TRA) != 0U) ? 1U : 0U;
+        i2c_slave.active = 1U;
+        i2c_slave.tx_index = 0U;
+        CLEAR_BIT(I2C3->CR2, I2C_CR2_ITBUFEN);
+        if (i2c_slave.direction) {
+            ++i2c_slave.reads;
+            i2c_slave_transmit();
+        } else {
+            ++i2c_slave.writes;
+            i2c_map.expect_address = 1U;
+            SET_BIT(I2C3->CR2, I2C_CR2_ITBUFEN);
+        }
+        return;
+    }
+    if (i2c_slave.active && !i2c_slave.direction) {
+        if ((I2C3->SR1 & I2C_SR1_RXNE) != 0U) i2c_slave_receive();
+        if ((I2C3->SR1 & I2C_SR1_RXNE) != 0U) i2c_slave_receive();
+    }
+    if ((sr1 & I2C_SR1_STOPF) != 0U) {
+        (void)I2C3->SR1;
+        SET_BIT(I2C3->CR1, I2C_CR1_PE | I2C_CR1_ACK); /* Clear STOPF. */
+        CLEAR_BIT(I2C3->CR2, I2C_CR2_ITBUFEN);
+        i2c_slave.active = 0U;
+        if (i2c_tcu.enabled && (i2c_tcu.role == 1U)) {
+            uint8_t index;
+            if (i2c_slave.direction && (i2c_tcu.state == 5U)) {
+                CLEAR_BIT(I2C3->CR1, I2C_CR1_ACK);
+                return;
+            }
+            if (i2c_slave.direction || (i2c_tcu.state != 1U) || (i2c_tcu.rx_count != i2c_tcu.n)) {
+                i2c_tcu_finish(TCU_ERR_LENGTH | TCU_ERR_SEQUENCE); return;
+            }
+            /* Echo the actual receive buffer, even if the pattern is wrong. */
+            memcpy(i2c_slave.tx, i2c_tcu.rx, i2c_tcu.n);
+            i2c_slave.tx_length = i2c_tcu.n;
+            for (index = 0U; index < i2c_tcu.n; ++index)
+                if (i2c_tcu.rx[index] != i2c_tcu_pattern(index)) i2c_tcu.errors |= TCU_ERR_DATA;
+            i2c_tcu.phase_tick = HAL_GetTick();
+            i2c_tcu.state = 2U;
+        }
+    } else if (i2c_slave.active && i2c_slave.direction &&
+               ((sr1 & I2C_SR1_BTF) != 0U) && ((sr1 & I2C_SR1_AF) == 0U)) {
+        if (i2c_tcu.enabled && (i2c_tcu.tx_count >= i2c_tcu.n)) {
+            i2c_tcu_finish(TCU_ERR_LENGTH); return; /* Master ACKed last byte. */
+        }
+        i2c_slave_transmit();
+    }
+}
+
+void I2C3_ER_IRQHandler(void)
+{
+    uint32_t flags;
+    if (!i2c_slave.enabled) return;
+    flags = I2C3->SR1 & (I2C_SR1_BERR | I2C_SR1_ARLO | I2C_SR1_AF |
+                         I2C_SR1_OVR | I2C_SR1_TIMEOUT);
+    /* AF is the master's normal end-of-read NACK, not a bus failure. */
+    i2c_slave.errors |= flags & ~I2C_SR1_AF;
+    if (i2c_tcu.enabled && (i2c_tcu.role == 1U)) {
+        if ((flags & ~I2C_SR1_AF) != 0U) {
+            i2c_tcu.raw_error |= flags & ~I2C_SR1_AF;
+            i2c_tcu_finish(TCU_ERR_BUS);
+        } else if ((flags & I2C_SR1_AF) != 0U) {
+            if (!i2c_slave.direction || (i2c_tcu.state != 2U) || (i2c_tcu.tx_count != i2c_tcu.n))
+                i2c_tcu.errors |= TCU_ERR_LENGTH;
+            CLEAR_BIT(I2C3->CR1, I2C_CR1_ACK);
+            i2c_tcu.state = 5U; /* Final NACK is normal; still require STOP/idle. */
+            i2c_tcu.phase_tick = HAL_GetTick();
+        }
+    }
+    I2C3->SR1 = ~flags; /* These error flags are cleared by writing zero. */
+    CLEAR_BIT(I2C3->CR2, I2C_CR2_ITBUFEN);
+    i2c_slave.active = 0U;
+    if (!i2c_tcu.enabled) SET_BIT(I2C3->CR1, I2C_CR1_ACK);
+}
 static CAN_HandleTypeDef hcan1;
+static uint8_t spi_data_bits = 8U;
+static uint8_t spi_three_wire;
 static ADC_HandleTypeDef hadc1;
 static DAC_HandleTypeDef hdac;
 static uint8_t power_initialized;
@@ -130,11 +342,17 @@ static uint8_t spi_config(const uint8_t *p, uint8_t len)
     uint32_t speed;
     uint32_t divider;
 
-    /* [CONFIG][speed_Hz:u32][mode:0..3][lsb_first:0/1] */
-    if (len != 7U) return LT_BAD_LENGTH;
+    /* V3.0.30: [CONFIG][speed_Hz:u32][mode:0..3][lsb_first:0/1]
+       [data_bits:8/16][three_wire:0/1]. Keep the original 7-byte request
+       compatible by defaulting it to 8-bit, full-duplex operation. */
+    if ((len != 7U) && (len != 9U)) return LT_BAD_LENGTH;
     speed = get_u32(&p[1]);
     if ((speed < 164063U) || (speed > 21000000U) ||
         (p[5] > 3U) || (p[6] > 1U)) return LT_BAD_LENGTH;
+    spi_data_bits = (len == 9U) ? p[7] : 8U;
+    spi_three_wire = (len == 9U) ? p[8] : 0U;
+    if (((spi_data_bits != 8U) && (spi_data_bits != 16U)) ||
+        (spi_three_wire > 1U)) return LT_BAD_LENGTH;
 
     __HAL_RCC_GPIOB_CLK_ENABLE();
     /* Always release chip select before reconfiguring clock polarity. */
@@ -166,8 +384,8 @@ static uint8_t spi_config(const uint8_t *p, uint8_t len)
     memset(&hspi2, 0, sizeof(hspi2));
     hspi2.Instance = SPI2;
     hspi2.Init.Mode = SPI_MODE_MASTER;
-    hspi2.Init.Direction = SPI_DIRECTION_2LINES;
-    hspi2.Init.DataSize = SPI_DATASIZE_8BIT;
+    hspi2.Init.Direction = spi_three_wire ? SPI_DIRECTION_1LINE : SPI_DIRECTION_2LINES;
+    hspi2.Init.DataSize = (spi_data_bits == 16U) ? SPI_DATASIZE_16BIT : SPI_DATASIZE_8BIT;
     hspi2.Init.CLKPolarity = (p[5] & 2U) ? SPI_POLARITY_HIGH : SPI_POLARITY_LOW;
     hspi2.Init.CLKPhase = (p[5] & 1U) ? SPI_PHASE_2EDGE : SPI_PHASE_1EDGE;
     hspi2.Init.NSS = SPI_NSS_SOFT;
@@ -187,6 +405,9 @@ uint8_t rblink_platform_spi(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *
     uint8_t count;
     uint8_t tx[56] = {0xFFU};
     uint8_t rx[56];
+    uint8_t flags;
+    uint8_t frames;
+    uint8_t i;
     if (p[0] == 2U) {
         if (len != 1U) return LT_BAD_LENGTH;
         HAL_GPIO_WritePin(RB_SPI_NSS_PORT, RB_SPI_NSS_PIN, GPIO_PIN_SET);
@@ -197,25 +418,57 @@ uint8_t rblink_platform_spi(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *
         return LT_OK;
     }
     if (p[0] == 0U) return spi_config(p, len);
-    /* [TRANSFER][cs_hold][count][data...] */
-    if ((len < 3U) || (p[1] > 1U) || (p[2] > 53U) ||
+    /* [TRANSFER][flags][count][data...]. flags bit0 keeps CS asserted;
+       bit1 selects receive direction for 3-wire mode. */
+    if ((len < 3U) || ((p[1] & ~3U) != 0U) || (p[2] > 53U) ||
         (len != (uint8_t)(3U + p[2])) ||
         (hspi2.Instance != SPI2)) return LT_BAD_LENGTH;
+    flags = p[1];
     count = p[2];
+    if ((spi_data_bits == 16U) && ((count & 1U) != 0U)) return LT_BAD_LENGTH;
+    frames = (spi_data_bits == 16U) ? (uint8_t)(count / 2U) : count;
     /* A zero-byte transfer is an explicit CS control/recovery operation. */
     if (count == 0U) {
         HAL_GPIO_WritePin(RB_SPI_NSS_PORT, RB_SPI_NSS_PIN,
-                         p[1] ? GPIO_PIN_RESET : GPIO_PIN_SET);
+                         (flags & 1U) ? GPIO_PIN_RESET : GPIO_PIN_SET);
         *rlen = 0U;
         return LT_OK;
     }
     memcpy(tx, &p[3], count);
+    /* Host words are written in display/wire order (MSB first). HAL accesses
+       16-bit buffers in native little-endian order, so swap each pair before
+       and after the peripheral transaction. */
+    if (spi_data_bits == 16U) {
+        for (i = 0U; i < count; i += 2U) {
+            uint8_t value = tx[i]; tx[i] = tx[i + 1U]; tx[i + 1U] = value;
+        }
+    }
     HAL_GPIO_WritePin(RB_SPI_NSS_PORT, RB_SPI_NSS_PIN, GPIO_PIN_RESET);
-    if (HAL_SPI_TransmitReceive(&hspi2, tx, rx, count, LT_TIMEOUT_MS) != HAL_OK) {
+    if ((spi_three_wire != 0U) && ((flags & 2U) != 0U)) {
+        if (HAL_SPI_Receive(&hspi2, rx, frames, LT_TIMEOUT_MS) != HAL_OK) {
+            HAL_GPIO_WritePin(RB_SPI_NSS_PORT, RB_SPI_NSS_PIN, GPIO_PIN_SET);
+            return LT_IO_ERROR;
+        }
+    } else if (spi_three_wire != 0U) {
+        if (HAL_SPI_Transmit(&hspi2, tx, frames, LT_TIMEOUT_MS) != HAL_OK) {
+            HAL_GPIO_WritePin(RB_SPI_NSS_PORT, RB_SPI_NSS_PIN, GPIO_PIN_SET);
+            return LT_IO_ERROR;
+        }
+        memset(rx, 0, count);
+    } else if (HAL_SPI_TransmitReceive(&hspi2, tx, rx, frames, LT_TIMEOUT_MS) != HAL_OK) {
         HAL_GPIO_WritePin(RB_SPI_NSS_PORT, RB_SPI_NSS_PIN, GPIO_PIN_SET);
         return LT_IO_ERROR;
     }
-    if (p[1] == 0U) HAL_GPIO_WritePin(RB_SPI_NSS_PORT, RB_SPI_NSS_PIN, GPIO_PIN_SET);
+    if ((flags & 1U) == 0U) HAL_GPIO_WritePin(RB_SPI_NSS_PORT, RB_SPI_NSS_PIN, GPIO_PIN_SET);
+    if ((spi_three_wire != 0U) && ((flags & 2U) == 0U)) {
+        *rlen = 0U;
+        return LT_OK;
+    }
+    if (spi_data_bits == 16U) {
+        for (i = 0U; i < count; i += 2U) {
+            uint8_t value = rx[i]; rx[i] = rx[i + 1U]; rx[i + 1U] = value;
+        }
+    }
     memcpy(r, rx, count);
     *rlen = count;
     return LT_OK;
@@ -225,6 +478,12 @@ static uint8_t i2c_config(const uint8_t *p, uint8_t len)
 {
     GPIO_InitTypeDef gpio = {0};
     if (len != 5U) return LT_BAD_LENGTH;
+    if ((get_u32(&p[1]) == 0U) || (get_u32(&p[1]) > 400000U)) return LT_BAD_LENGTH;
+    i2c_tcu.enabled = 0U;
+    i2c_slave_disable();
+    i2c_map.enabled = 0U;
+    i2c_map.pending = 0U;
+    if (hi2c3.Instance == I2C3) (void)HAL_I2C_DeInit(&hi2c3);
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOC_CLK_ENABLE();
     __HAL_RCC_I2C3_CLK_ENABLE();
@@ -249,6 +508,206 @@ static uint8_t i2c_config(const uint8_t *p, uint8_t len)
     hi2c3.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
     if (HAL_I2C_Init(&hi2c3) != HAL_OK) return LT_IO_ERROR;
     RB_I2C_Enable(1U);
+    return LT_OK;
+}
+
+static void i2c_put_u32(uint8_t *p, uint32_t value)
+{
+    p[0] = (uint8_t)value; p[1] = (uint8_t)(value >> 8U);
+    p[2] = (uint8_t)(value >> 16U); p[3] = (uint8_t)(value >> 24U);
+}
+
+static uint8_t i2c_slave_config(const uint8_t *p, uint8_t len, uint32_t speed, uint8_t register_mode)
+{
+    uint8_t master_config[5] = {0U};
+    uint8_t status;
+    /* [6, address7, filler, tx_length, tx_data...]. Reserved addresses rejected. */
+    if ((len < 4U) || (p[1] < 8U) || (p[1] > 0x77U) ||
+        (p[3] > RB_I2C_TX_SIZE) || (len != (uint8_t)(4U + p[3]))) return LT_BAD_LENGTH;
+    if (i2c_slave.enabled && ((I2C3->SR2 & I2C_SR2_BUSY) != 0U)) return LT_BUSY;
+    i2c_put_u32(&master_config[1], speed);
+    status = i2c_config(master_config, sizeof(master_config));
+    if (status != LT_OK) return status;
+    __HAL_I2C_DISABLE(&hi2c3);
+    memset(&i2c_slave, 0, sizeof(i2c_slave));
+    i2c_slave.address = p[1]; i2c_slave.filler = p[2]; i2c_slave.tx_length = p[3];
+    memcpy(i2c_slave.tx, &p[4], p[3]);
+    /* OAR1 bit14 must stay set in 7-bit addressing mode (RM0090). */
+    I2C3->OAR1 = I2C_ADDRESSINGMODE_7BIT | ((uint32_t)p[1] << 1U);
+    I2C3->OAR2 = 0U;
+    i2c_map.enabled = register_mode;
+    i2c_map.pointer = 0U;
+    i2c_slave.enabled = 1U;
+    HAL_NVIC_SetPriority(I2C3_EV_IRQn, 3U, 0U);
+    HAL_NVIC_SetPriority(I2C3_ER_IRQn, 3U, 0U);
+    HAL_NVIC_ClearPendingIRQ(I2C3_EV_IRQn);
+    HAL_NVIC_ClearPendingIRQ(I2C3_ER_IRQn);
+    SET_BIT(I2C3->CR1, I2C_CR1_ACK | I2C_CR1_PE);
+    SET_BIT(I2C3->CR2, I2C_CR2_ITEVTEN | I2C_CR2_ITERREN);
+    HAL_NVIC_EnableIRQ(I2C3_ER_IRQn);
+    HAL_NVIC_EnableIRQ(I2C3_EV_IRQn);
+    return LT_OK;
+}
+
+static uint8_t i2c_map_command(const uint8_t *p, uint8_t len)
+{
+    uint8_t config[4], status;
+    uint32_t primask;
+    if (p[0] == 11U) {
+        if ((len != 3U) || (p[1] < 8U) || (p[1] > 0x77U)) return LT_BAD_LENGTH;
+        i2c_map.staging = (uint8_t)(1U - i2c_map.current);
+        memset(i2c_map.bank[i2c_map.staging], p[2], 256U);
+        i2c_map.address = p[1]; i2c_map.filler = p[2];
+        i2c_map.pending = 1U;
+        return LT_OK;
+    }
+    if (!i2c_map.pending) return LT_BAD_ACTION;
+    if (p[0] == 12U) {
+        if ((len < 4U) || (p[2] == 0U) || (p[2] > 48U) ||
+            (len != (uint8_t)(3U + p[2])) || ((uint16_t)p[1] + p[2] > 256U)) return LT_BAD_LENGTH;
+        memcpy(&i2c_map.bank[i2c_map.staging][p[1]], &p[3], p[2]);
+        return LT_OK;
+    }
+    if ((p[0] != 13U) || (len != 1U)) return LT_BAD_LENGTH;
+    /* Freeze idle detection and IRQs together before reconfiguring. Never
+     * replace a map during an external master's in-progress transaction. */
+    primask = __get_PRIMASK(); __disable_irq();
+    if ((hi2c3.Instance == I2C3) && ((I2C3->SR2 & I2C_SR2_BUSY) != 0U)) {
+        __set_PRIMASK(primask); return LT_BUSY;
+    }
+    i2c_slave_disable();
+    i2c_map.enabled = 0U;
+    i2c_map.current = i2c_map.staging;
+    __set_PRIMASK(primask);
+    config[0] = 6U; config[1] = i2c_map.address; config[2] = i2c_map.filler; config[3] = 0U;
+    status = i2c_slave_config(config, sizeof(config), 100000U, 1U);
+    if (status == LT_OK) i2c_map.pending = 0U;
+    return status;
+}
+
+static uint8_t i2c_tcu_command(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *rlen)
+{
+    uint32_t speed, primask;
+    uint8_t config[5] = {0U}, status, index;
+    const uint8_t slave_config[4] = {6U, 0x50U, 0xFFU, 0U};
+    if (p[0] == 9U) {
+        if ((len != 7U) || (p[1] > 1U) || ((p[2] != 1U) && (p[2] != 16U))) return LT_BAD_LENGTH;
+        speed = get_u32(&p[3]);
+        if ((speed != 100000U) && (speed != 400000U)) return LT_BAD_LENGTH;
+        if (i2c_tcu.enabled && (i2c_tcu.state != 3U) && (i2c_tcu.state != 4U)) return LT_BUSY;
+        if (p[1] == 1U) status = i2c_slave_config(slave_config, sizeof(slave_config), speed, 0U);
+        else { i2c_put_u32(&config[1], speed); status = i2c_config(config, sizeof(config)); }
+        if (status != LT_OK) return status;
+        primask = __get_PRIMASK(); __disable_irq();
+        memset(&i2c_tcu, 0, sizeof(i2c_tcu));
+        i2c_tcu.role = p[1]; i2c_tcu.n = p[2]; i2c_tcu.speed = speed;
+        i2c_tcu.state = 1U; i2c_tcu.start_tick = HAL_GetTick();
+        i2c_tcu.phase_tick = i2c_tcu.start_tick;
+        if (p[1] == 0U)
+            for (index = 0U; index < p[2]; ++index) i2c_tcu.tx[index] = i2c_tcu_pattern(index);
+        i2c_tcu.enabled = 1U;
+        __set_PRIMASK(primask);
+        return LT_OK;
+    }
+    if ((p[0] != 10U) || (len != 1U) || !i2c_tcu.enabled) return LT_BAD_ACTION;
+    primask = __get_PRIMASK(); __disable_irq();
+    r[0] = 1U; r[1] = i2c_tcu.role; r[2] = i2c_tcu.state; r[3] = i2c_tcu.n;
+    i2c_put_u32(&r[4], i2c_tcu.errors);
+    r[8] = i2c_tcu.rx_count; r[9] = i2c_tcu.tx_count;
+    r[10] = i2c_tcu.writes; r[11] = i2c_tcu.reads;
+    i2c_put_u32(&r[12], i2c_tcu.raw_error);
+    i2c_put_u32(&r[16], i2c_tcu.speed);
+    i2c_put_u32(&r[20], ((i2c_tcu.state == 3U) || (i2c_tcu.state == 4U)
+        ? i2c_tcu.end_tick : HAL_GetTick()) - i2c_tcu.start_tick);
+    memcpy(&r[24], i2c_tcu.rx, 16U); memcpy(&r[40], i2c_tcu.tx, 16U);
+    __set_PRIMASK(primask);
+    *rlen = 56U;
+    return LT_OK;
+}
+
+static uint8_t i2c_tcu_wait_idle(void)
+{
+    uint32_t start = HAL_GetTick();
+    while ((I2C3->SR2 & I2C_SR2_BUSY) != 0U)
+        if ((uint32_t)(HAL_GetTick() - start) >= 1000U) return 0U;
+    return 1U;
+}
+
+static void i2c_tcu_task(void)
+{
+    HAL_StatusTypeDef result;
+    uint8_t index;
+    if (!i2c_tcu.enabled || (i2c_tcu.state == 3U) || (i2c_tcu.state == 4U)) return;
+    if (i2c_tcu.role == 1U) {
+        if (i2c_tcu.state == 5U) {
+            if ((I2C3->SR2 & I2C_SR2_BUSY) == 0U) i2c_tcu_finish(0U);
+            else if ((uint32_t)(HAL_GetTick() - i2c_tcu.phase_tick) >= 1000U)
+                i2c_tcu_finish(TCU_ERR_TIMEOUT | TCU_ERR_IDLE);
+        } else if ((uint32_t)(HAL_GetTick() - i2c_tcu.phase_tick) >= 10000U) {
+            i2c_tcu_finish(TCU_ERR_TIMEOUT);
+        }
+        return;
+    }
+    if (i2c_tcu.state == 1U) {
+        if ((I2C3->SR2 & I2C_SR2_BUSY) != 0U) { i2c_tcu_finish(TCU_ERR_IDLE); return; }
+        i2c_tcu.writes = 1U;
+        hi2c3.XferCount = i2c_tcu.n;
+        result = HAL_I2C_Master_Transmit(&hi2c3, 0xA0U, i2c_tcu.tx, i2c_tcu.n, 1000U);
+        i2c_tcu.raw_error = HAL_I2C_GetError(&hi2c3);
+        i2c_tcu.tx_count = (uint8_t)(i2c_tcu.n - hi2c3.XferCount);
+        if (result != HAL_OK) {
+            i2c_tcu_finish(TCU_ERR_BUS | ((result == HAL_TIMEOUT) ? TCU_ERR_TIMEOUT : 0U)); return;
+        }
+        if (!i2c_tcu_wait_idle()) { i2c_tcu_finish(TCU_ERR_IDLE | TCU_ERR_TIMEOUT); return; }
+        i2c_tcu.phase_tick = HAL_GetTick(); i2c_tcu.state = 2U;
+    } else if ((i2c_tcu.state == 2U) && ((uint32_t)(HAL_GetTick() - i2c_tcu.phase_tick) >= 101U)) {
+        i2c_tcu.reads = 1U;
+        hi2c3.XferCount = i2c_tcu.n;
+        result = HAL_I2C_Master_Receive(&hi2c3, 0xA0U, i2c_tcu.rx, i2c_tcu.n, 1000U);
+        i2c_tcu.raw_error |= HAL_I2C_GetError(&hi2c3);
+        i2c_tcu.rx_count = (uint8_t)(i2c_tcu.n - hi2c3.XferCount);
+        if (result != HAL_OK) {
+            i2c_tcu_finish(TCU_ERR_BUS | ((result == HAL_TIMEOUT) ? TCU_ERR_TIMEOUT : 0U)); return;
+        }
+        if (!i2c_tcu_wait_idle()) { i2c_tcu_finish(TCU_ERR_IDLE | TCU_ERR_TIMEOUT); return; }
+        if ((i2c_tcu.rx_count != i2c_tcu.n) || (i2c_tcu.tx_count != i2c_tcu.n)) i2c_tcu.errors |= TCU_ERR_LENGTH;
+        for (index = 0U; index < i2c_tcu.n; ++index)
+            if (i2c_tcu.rx[index] != i2c_tcu.tx[index]) i2c_tcu.errors |= TCU_ERR_DATA;
+        i2c_tcu_finish(0U);
+    }
+}
+
+static uint8_t i2c_slave_command(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *rlen)
+{
+    uint32_t primask;
+    uint8_t count = 0U;
+    if (!i2c_slave.enabled) return LT_BAD_ACTION;
+    if (p[0] == 7U) {
+        if (i2c_map.enabled) return LT_BAD_ACTION;
+        if ((len < 2U) || (p[1] > RB_I2C_TX_SIZE) || (len != (uint8_t)(2U + p[1]))) return LT_BAD_LENGTH;
+        primask = __get_PRIMASK(); __disable_irq();
+        if ((I2C3->SR2 & I2C_SR2_BUSY) != 0U) { __set_PRIMASK(primask); return LT_BUSY; }
+        /* Do not replace bytes while an external master owns the bus. */
+        memcpy(i2c_slave.tx, &p[2], p[1]);
+        i2c_slave.tx_length = p[1]; i2c_slave.tx_index = 0U;
+        __set_PRIMASK(primask);
+        return LT_OK;
+    }
+    if ((p[0] != 8U) || (len != 1U)) return LT_BAD_LENGTH;
+    primask = __get_PRIMASK(); __disable_irq();
+    r[0] = 1U; r[1] = i2c_slave.address;
+    i2c_put_u32(&r[4], i2c_slave.received);
+    i2c_put_u32(&r[8], i2c_slave.supplied);
+    i2c_put_u32(&r[12], i2c_slave.dropped);
+    i2c_put_u32(&r[16], i2c_slave.errors);
+    put_u16(&r[20], i2c_slave.writes); put_u16(&r[22], i2c_slave.reads);
+    while ((count < 32U) && (i2c_slave.tail != i2c_slave.head)) {
+        r[24U + count++] = i2c_slave.rx[i2c_slave.tail];
+        i2c_slave.tail = (uint16_t)((i2c_slave.tail + 1U) % RB_I2C_RX_SIZE);
+    }
+    put_u16(&r[2], (uint16_t)((i2c_slave.head + RB_I2C_RX_SIZE - i2c_slave.tail) % RB_I2C_RX_SIZE));
+    __set_PRIMASK(primask);
+    *rlen = (uint8_t)(24U + count);
     return LT_OK;
 }
 
@@ -305,15 +764,25 @@ static uint8_t i2c_failed(void)
 uint8_t rblink_platform_i2c(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *rlen)
 {
     uint8_t addr, txlen, rxlen;
+    if (len == 0U) return LT_BAD_LENGTH;
     if (p[0] == 2U) {
         if (len != 1U) return LT_BAD_LENGTH;
+        i2c_tcu.enabled = 0U;
+        i2c_slave_disable();
+        i2c_map.enabled = 0U; i2c_map.pending = 0U;
         /* Close the controller but keep the target translator enabled. */
         RB_I2C_Enable(1U);
         if (hi2c3.Instance == I2C3) (void)HAL_I2C_DeInit(&hi2c3);
         memset(&hi2c3, 0, sizeof(hi2c3));
         return LT_OK;
     }
+    if ((p[0] == 9U) || (p[0] == 10U)) return i2c_tcu_command(p, len, r, rlen);
+    if (i2c_tcu.enabled) return LT_BUSY;
+    if ((p[0] >= 11U) && (p[0] <= 13U)) return i2c_map_command(p, len);
+    if (p[0] == 6U) return i2c_slave_config(p, len, 100000U, 0U);
+    if ((p[0] == 7U) || (p[0] == 8U)) return i2c_slave_command(p, len, r, rlen);
     if (p[0] == 0U) return i2c_config(p, len);
+    if ((p[0] != 1U) || i2c_slave.enabled) return LT_BAD_ACTION;
     /* [TRANSFER][7-bit address][write_len][read_len][write_data...] */
     if ((len < 4U) || (hi2c3.Instance != I2C3)) return LT_BAD_LENGTH;
     addr = p[1]; txlen = p[2]; rxlen = p[3];
@@ -586,7 +1055,10 @@ void RB_Power_Init(void)
 
 void RB_Bus_Task(void)
 {
+    i2c_tcu_task();
     power_control_task();
+    /* Avoid Flash programming stalls during the one-shot I2C exchange. */
+    if (i2c_tcu.enabled && (i2c_tcu.state != 3U) && (i2c_tcu.state != 4U)) return;
     if (power_save_pending &&
         ((int32_t)(HAL_GetTick() - power_save_tick) >= 0)) {
         if (power_save()) power_save_pending = 0U;

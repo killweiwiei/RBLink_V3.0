@@ -16,6 +16,130 @@ All multi-byte integers are little-endian. A request after the command byte is `
 
 The information payload is `[protocol_major, protocol_minor, capabilities:u16, firmware_major, firmware_minor, firmware_patch, board_revision]`. Hosts must accept the original four-byte prefix so older V3 firmware remains usable.
 
+## I2C register-map extension (protocol 1.10, firmware V3.0.34)
+
+Capability bit9 (`0x0200`) enables a simple 8-bit address / 8-bit value slave map.
+Command remains `0x86`; action-specific data excludes the action byte below.
+
+| Action | Data | Effect |
+|---|---|---|
+| 11 Begin | address7, filler | Validate 08–77; fill inactive 256-byte bank; begin new upload |
+| 12 Chunk | start:u8, count:u8, values[count] | count 1–48; start+count ≤256; upload only, no live change |
+| 13 Commit | none | Require pending upload and idle bus; activate complete bank and listen |
+| 8 Poll | none | Existing 24-byte statistics header plus RX bytes |
+| 2 Close | none | Disable listener, cancel pending upload |
+
+Successful actions 11–13 return no data. Busy status 4 leaves an uncommitted upload pending.
+Commit initializes the listener at 100 kHz configuration with clock stretching enabled;
+the external master supplies SCL. Commit resets pointer/statistics. Generic configuration,
+close and legacy slave configuration leave map mode. Legacy action7 is rejected while map mode is active.
+The first byte of each external write transaction sets the register pointer; further write
+bytes are logged only. Reads return map[pointer++] with 8-bit wraparound. Pointer starts at 00
+and persists across STOP/repeated START. Address match ACK and final master NACK are normal.
+Do not mistake a failed commit for continued listening; on initialization error reopen the slave.
+Usage and hardware checks: [I2C_REGISTER_MAP.md](I2C_REGISTER_MAP.md).
+
+## I2C slave extension (protocol 1.8, firmware V3.0.32)
+
+Capability bit 7 (`0x0080`) announces I2C3 slave support. Do not send these
+actions unless this capability is present. V2 and older V3 master actions stay
+unchanged. Master and slave modes are mutually exclusive on the same connector.
+Close (`action=2`) disables both I2C3 IRQs and releases the controller.
+
+| Action | Data following action | Result |
+|---|---|---|
+| 6, configure slave | `address7:u8, filler:u8, count:u8, preset[count]` | Start listening with preset already loaded; reset queue/counters |
+| 7, replace preset | `count:u8, preset[count]` | Replace buffer only when the external bus is idle |
+| 8, drain/status | none | 24-byte status header, followed by 0–32 received bytes |
+
+Addresses are `0x08–0x77` and must not be shifted by the host. Preset count is
+0–48. An empty preset returns only the filler byte. Each external read address
+match resets the preset index to zero; after the preset ends, return filler.
+This first stage provides raw byte reception/transmission, not an EEPROM
+register-pointer emulator. The firmware never waits for USB/Wi-Fi to supply
+bytes during a transaction, and supports SCL stretching between bytes.
+Validate initially with a 100 kHz external master. The hardware has 400 kHz
+capability, but 400 kHz operation requires separate board-level validation.
+
+Status 4 means BUSY: wait for STOP/idle, then retry configuration/preset update.
+Never issue the master's nine-clock bus recovery while operating as a slave.
+The master's final read NACK (AF) is normal and does not increment errors.
+
+| Header offset | Type | Meaning |
+|---|---|---|
+| 0 | u8 | Status format version, currently 1 |
+| 1 | u8 | Active 7-bit address |
+| 2 | u16 | Bytes still queued **after** this response drains 0–32 bytes |
+| 4 | u32 | Total received bytes, including bytes dropped when queue full |
+| 8 | u32 | Bytes supplied to TX data register, including filler; not an ACK count |
+| 12 | u32 | Queue overflow bytes (drop newest) |
+| 16 | u32 | Sticky SR1 error bitmap: BERR, ARLO, OVR, TIMEOUT; AF excluded |
+| 20 | u16 | External write address matches (wraps at 65536) |
+| 22 | u16 | External read address matches (wraps at 65536) |
+| 24… | bytes | Queued RX data in receive order |
+
+The RX ring has 1023 usable bytes. USB drain chunks do not preserve transaction
+boundaries. Host polls at 25 ms with at most 16 responses per turn; transport
+latency/other debug operations can still overflow the queue, reported explicitly
+by the dropped counter. Closing the PC app or losing the network stops host
+polling, not necessarily the standalone slave: send close, reconfigure, or
+reset the probe to change its bus role. Error counters persist until the next
+successful slave configuration.
+
+## TCU one-shot hardware test (protocol 1.9, firmware V3.0.33)
+
+Capability bit 8 (`0x0100`, high capability byte bit0) advertises the strict
+TCU write/STOP/gap/read/STOP test. This is separate from generic preset mode.
+Only command `0x86` accepts actions 9 and 10:
+
+- Action 9 data: `role:u8, N:u8, speed:u32`. RBLink role 0=master, 1=slave;
+  N is 1 or 16; speed is 100000 or 400000. Address is fixed at unshifted 0x50.
+  Start returns immediately, without a target-side address scan or probe.
+- Action 10: no data; returns the fixed 56-byte status below. This queries
+  local state over USB/Wi-Fi and does not emit I2C frames.
+- Action 2: releases the controller and exits test ownership. Ordinary I2C
+  configure/transfer/preset operations are rejected while test ownership is
+  active. Another action 9 is accepted only after the prior group terminates.
+
+Master execution runs in `RB_Bus_Task`: one HAL pure-data transmit, verify
+BUSY clears after STOP, wait 101 system ticks (1 ms tick, conservative margin
+for at least 100 ms), then one separate pure-data receive. Each HAL call has a
+1000 ms timeout; no auto retry, register prefix, memory read, repeated START,
+or nine-clock recovery is used. RX/TX counts reflect HAL transfer progress,
+not independently measured ACK counts. Fatal API errors stop the group.
+
+Slave execution waits at most 10 seconds for each phase. The first write must
+have exactly N bytes and STOP. Only then is the actual received buffer copied
+to the local TX buffer. Wrong pattern data is still echoed but latches failure.
+A read before the write, insufficient gap, extra/repeated addressing, wrong
+length, abnormal final ACK/NACK or bus error fails the group. Normal final
+NACK waits for STOP/bus idle before completion. Terminal state disables ACK
+and PE, so the test is not a continuous responder. Host issues close after
+capturing terminal diagnostics or cancellation. Flash persistence is deferred
+while the test is active to avoid Flash stalls during slave servicing.
+
+| Offset | Field |
+|---|---|
+| 0 | Format version 1 |
+| 1 | RBLink role (0 master, 1 slave) |
+| 2 | State: 1 first write, 2 gap/await read, 3 done, 4 failed, 5 await STOP/idle |
+| 3 | N (1 or 16) |
+| 4 | Errors u32: bit0 length, bit1 data pattern, bit2 bus/API, bit3 sequence, bit4 timeout, bit5 gap, bit6 idle |
+| 8,9 | RX/TX byte counts u8 |
+| 10,11 | Write/read transaction attempt/address-match counts u8 |
+| 12 | Raw error u32 (HAL error for master; SR1 error flags except normal AF for slave) |
+| 16 | Configured speed u32, not measured frequency |
+| 20 | Elapsed milliseconds u32 |
+| 24…39 | Actual RX buffer, 16-byte slot; use first N bytes and RX count |
+| 40…55 | TX buffer, 16-byte slot; use first N bytes and TX count |
+
+The pattern is `(0xA5 XOR (37*i)) & 0xFF`; for N=16:
+`A5 80 EF CA 31 1C 7B A6 8D E8 D7 32 19 44 A3 8E`.
+State 3 and matching data/counters are only the RBLink local check. Final
+acceptance still requires TCU g_debug, independent START/STOP and ACK/NACK
+waveforms, FIFO/idle cleanup, and measured SCL speed. Neither configuration
+values nor USB elapsed time establish actual 100/400 kHz performance.
+
 Storage `0x89` is implemented by protocol `1.5` / firmware `V3.0.05`. Configure
 has no data and returns `[layout_version, flags, jedec_mfr, jedec_type,
 jedec_density, capacity:u32, page_size:u16, sector_size:u16,
