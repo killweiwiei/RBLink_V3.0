@@ -29,7 +29,16 @@ Command remains `0x86`; action-specific data excludes the action byte below.
 | 8 Poll | none | Existing 24-byte statistics header plus RX bytes |
 | 2 Close | none | Disable listener, cancel pending upload |
 
-Successful actions 11–13 return no data. Busy status 4 leaves an uncommitted upload pending.
+Successful actions 11–12 return no data. Action13 originally returned no data;
+firmware V3.0.35 optionally returns a 56-byte read-only startup diagnostic snapshot.
+Hosts accept the original empty response and warn that hardware ACK was not read back.
+Snapshot bytes 0–3: format=1, software enabled, address7, map enabled. Following u32 LE
+fields at offsets 4,8,12,16,20,24,28,32,36,40,44,48,52 are respectively I2C3 CR1,
+CR2, OAR1, GPIOA IDR, GPIOC IDR, GPIOA ODR, GPIOA MODER, GPIOA AFRH,
+GPIOC MODER, GPIOC AFRH, I2C3 CCR, TRISE, RCC APB1ENR.
+Snapshot construction never reads SR1/SR2/DR and does not change PE/ACK sequencing.
+No new capability is required because this is optional successful-commit response data.
+Busy status 4 leaves an uncommitted upload pending.
 Commit initializes the listener at 100 kHz configuration with clock stretching enabled;
 the external master supplies SCL. Commit resets pointer/statistics. Generic configuration,
 close and legacy slave configuration leave map mode. Legacy action7 is rejected while map mode is active.

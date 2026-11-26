@@ -5,7 +5,7 @@
 #if (RBLINK_DEBUG_ENABLE != 0U)
 
 #define RB_DEBUG_BAUD        115200U
-#define RB_SWD_TRACE_DEPTH   16U
+#define RB_SWD_TRACE_DEPTH   32U
 #define RB_SWD_TRACE_MASK    (RB_SWD_TRACE_DEPTH - 1U)
 #define RB_DEBUG_TX_BUDGET   8U
 
@@ -36,6 +36,28 @@ static uint8_t format_trace(uint8_t *out, const RB_SWD_TraceRecord *record)
 {
   uint8_t n = 0U;
   int32_t shift;
+  if (record->source == 3U) {
+    static const char * const names[] = {
+      "FLAGS(en,addr,map)", "CR1", "CR2", "OAR1", "GPIOA_IDR", "GPIOC_IDR",
+      "GPIOA_ODR", "GPIOA_MODER", "GPIOA_AFRH", "GPIOC_MODER", "GPIOC_AFRH",
+      "CCR", "TRISE", "RCC_APB1ENR"
+    };
+    const char *name;
+    if (record->request >= (uint8_t)(sizeof(names) / sizeof(names[0]))) return 0U;
+    name = names[record->request];
+    out[n++] = 'I'; out[n++] = '2'; out[n++] = 'C'; out[n++] = ' ';
+    while (*name != '\0') out[n++] = (uint8_t)*name++;
+    out[n++] = '='; out[n++] = '0'; out[n++] = 'x';
+    for (shift = 28; shift >= 0; shift -= 4) out[n++] = hex_digit(record->value >> (uint32_t)shift);
+    if (record->request == 1U) {
+      out[n++] = ' '; out[n++] = 'P'; out[n++] = 'E'; out[n++] = '=';
+      out[n++] = (uint8_t)('0' + (record->value & 1U));
+      out[n++] = ' '; out[n++] = 'A'; out[n++] = 'C'; out[n++] = 'K'; out[n++] = '=';
+      out[n++] = (uint8_t)('0' + ((record->value >> 10U) & 1U));
+    }
+    out[n++] = '\r'; out[n++] = '\n';
+    return n;
+  }
   if (record->source == 1U) {
     out[n++] = 'J'; out[n++] = 'T'; out[n++] = 'A'; out[n++] = 'G'; out[n++] = ' ';
     out[n++] = 'P'; out[n++] = 'D'; out[n++] = '1'; out[n++] = '0'; out[n++] = '=';
@@ -106,14 +128,15 @@ void RB_Debug_Init(void)
       " Firmware : " RBLINK_FIRMWARE_STRING "\r\n"
       " MCU      : STM32F407VGT6\r\n"
       " UART     : USART3 115200 8N1\r\n"
-      " Pins     : PB10=TX PB11=RX\r\n"
+      " Pins     : PB10=TX only; RX disabled\r\n"
+      " Mode     : DEBUG; SWO unavailable\r\n"
       " TX test  : UUUUUUUUUUUUUUUU\r\n"
       " Status   : early boot OK\r\n"
       "================================\r\n";
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_USART3_CLK_ENABLE();
 
-  gpio.Pin = RB_DEBUG_TX_PIN | RB_DEBUG_RX_PIN;
+  gpio.Pin = RB_DEBUG_TX_PIN;
   gpio.Mode = GPIO_MODE_AF_PP;
   gpio.Pull = GPIO_PULLUP;
   gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
@@ -125,7 +148,7 @@ void RB_Debug_Init(void)
   debug_uart.Init.WordLength = UART_WORDLENGTH_8B;
   debug_uart.Init.StopBits = UART_STOPBITS_1;
   debug_uart.Init.Parity = UART_PARITY_NONE;
-  debug_uart.Init.Mode = UART_MODE_TX_RX;
+  debug_uart.Init.Mode = UART_MODE_TX;
   debug_uart.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   debug_uart.Init.OverSampling = UART_OVERSAMPLING_16;
   (void)HAL_UART_Init(&debug_uart);
@@ -137,6 +160,28 @@ void RB_Debug_Init(void)
                           (uint16_t)(sizeof(boot_info) - 1U), 100U);
   tx_length = 0U;
   tx_index = 0U;
+}
+
+void RB_Debug_I2CStartup(const uint8_t *snapshot, uint8_t length)
+{
+  uint8_t index, next, offset;
+  uint32_t value;
+  if ((snapshot == 0) || (length != 56U) || (snapshot[0] != 1U)) return;
+  for (index = 0U; index < 14U; ++index) {
+    next = (uint8_t)((trace_head + 1U) & RB_SWD_TRACE_MASK);
+    if (next == trace_tail) return;
+    if (index == 0U)
+      value = (uint32_t)snapshot[1] | ((uint32_t)snapshot[2] << 8U) | ((uint32_t)snapshot[3] << 16U);
+    else {
+      offset = (uint8_t)(4U * index);
+      value = (uint32_t)snapshot[offset] | ((uint32_t)snapshot[offset + 1U] << 8U) |
+              ((uint32_t)snapshot[offset + 2U] << 16U) | ((uint32_t)snapshot[offset + 3U] << 24U);
+    }
+    trace_ring[trace_head].source = 3U;
+    trace_ring[trace_head].request = index;
+    trace_ring[trace_head].value = value;
+    trace_head = next;
+  }
 }
 
 void RB_Debug_SWDTrace(uint8_t request, uint8_t ack, uint8_t kind, uint32_t value)

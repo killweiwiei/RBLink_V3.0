@@ -3,14 +3,30 @@
 
 #include <stdint.h>
 
-#ifndef RBLINK_DEBUG_ENABLE
+/* Current working configuration is diagnostic. Production must define
+ * RBLINK_RELEASE_BUILD=1 (NDEBUG also selects production by default). */
+#ifndef RBLINK_RELEASE_BUILD
+#if defined(NDEBUG)
+#define RBLINK_RELEASE_BUILD 1U
+#else
+#define RBLINK_RELEASE_BUILD 0U
+#endif
+#endif
+
+#if (RBLINK_RELEASE_BUILD != 0U)
+#undef RBLINK_DEBUG_ENABLE
 #define RBLINK_DEBUG_ENABLE 0U
+#elif !defined(RBLINK_DEBUG_ENABLE)
+#define RBLINK_DEBUG_ENABLE 1U
 #endif
 
 #if (RBLINK_DEBUG_ENABLE != 0U)
 
 void RB_Debug_Init(void);
 void RB_Debug_Task(void);
+/* Queue the already captured I2C configuration; never read status registers
+ * or transmit UART bytes from an I2C IRQ. */
+void RB_Debug_I2CStartup(const uint8_t *snapshot, uint8_t length);
 
 /* Records one SWD transaction without printing inside the timing-critical
    bit-bang loop. kind is R (read), W (write), or E (invalid ACK/error). */
@@ -32,6 +48,7 @@ void RB_Debug_JTAGTransferTrace(uint8_t request, uint8_t ack, uint8_t phase,
    time, so they consume neither GPIO/UART resources nor transfer-loop time. */
 #define RB_Debug_Init()                                      ((void)0)
 #define RB_Debug_Task()                                      ((void)0)
+#define RB_Debug_I2CStartup(snapshot, length)                  ((void)0)
 #define RB_Debug_SWDTrace(request, ack, kind, value)          ((void)0)
 #define RB_Debug_JTAGTrace(primary, alternate)                ((void)0)
 #define RB_Debug_JTAGTransferTrace(request, ack, phase, value) ((void)0)

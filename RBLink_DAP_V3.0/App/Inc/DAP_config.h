@@ -4,6 +4,7 @@
 #include <string.h>
 #include "rblink_board.h"
 #include "rblink_version.h"
+#include "rblink_debug.h"
 
 #define CPU_CLOCK                    168000000U
 /* Calibrated for the direct BSRR GPIO path on STM32F407 @ 168 MHz. The CMSIS
@@ -17,7 +18,13 @@
 #define DAP_DEFAULT_SWJ_CLOCK        5000000U
 #define DAP_PACKET_SIZE              64U
 #define DAP_PACKET_COUNT             1U
+/* USART3 has one shared baud-rate generator: diagnostic TX and SWO RX
+ * cannot use independent rates, even when diagnostic RX is disabled. */
+#if (RBLINK_DEBUG_ENABLE != 0U)
+#define SWO_UART                     0
+#else
 #define SWO_UART                     1
+#endif
 #define SWO_UART_DRIVER              0
 /* PD9 is USART3_RX on APB1 (42 MHz). Oversampling by 8 limits reliable NRZ
    capture to PCLK1 / 8. The implementation returns the actual divider rate. */

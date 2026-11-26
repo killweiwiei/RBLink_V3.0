@@ -3,6 +3,7 @@
 #include "stm32f4xx_hal.h"
 #include "rblink_board.h"
 #include "rblink_bus.h"
+#include "rblink_debug.h"
 
 #define LT_OK          0x00U
 #define LT_BAD_LENGTH  0x01U
@@ -549,7 +550,31 @@ static uint8_t i2c_slave_config(const uint8_t *p, uint8_t len, uint32_t speed, u
     return LT_OK;
 }
 
-static uint8_t i2c_map_command(const uint8_t *p, uint8_t len)
+static void i2c_slave_diagnostics(uint8_t *r, uint8_t *rlen)
+{
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    /* Read-only configuration snapshot. Do not read SR1/SR2 or DR here:
+     * diagnostic traffic must not clear ADDR/STOPF or consume receive data. */
+    r[0] = 1U; r[1] = i2c_slave.enabled; r[2] = i2c_slave.address; r[3] = i2c_map.enabled;
+    i2c_put_u32(&r[4], I2C3->CR1);
+    i2c_put_u32(&r[8], I2C3->CR2);
+    i2c_put_u32(&r[12], I2C3->OAR1);
+    i2c_put_u32(&r[16], GPIOA->IDR);
+    i2c_put_u32(&r[20], GPIOC->IDR);
+    i2c_put_u32(&r[24], GPIOA->ODR);
+    i2c_put_u32(&r[28], GPIOA->MODER);
+    i2c_put_u32(&r[32], GPIOA->AFR[1]);
+    i2c_put_u32(&r[36], GPIOC->MODER);
+    i2c_put_u32(&r[40], GPIOC->AFR[1]);
+    i2c_put_u32(&r[44], I2C3->CCR);
+    i2c_put_u32(&r[48], I2C3->TRISE);
+    i2c_put_u32(&r[52], RCC->APB1ENR);
+    __set_PRIMASK(primask);
+    *rlen = 56U;
+}
+
+static uint8_t i2c_map_command(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *rlen)
 {
     uint8_t config[4], status;
     uint32_t primask;
@@ -581,7 +606,11 @@ static uint8_t i2c_map_command(const uint8_t *p, uint8_t len)
     __set_PRIMASK(primask);
     config[0] = 6U; config[1] = i2c_map.address; config[2] = i2c_map.filler; config[3] = 0U;
     status = i2c_slave_config(config, sizeof(config), 100000U, 1U);
-    if (status == LT_OK) i2c_map.pending = 0U;
+    if (status == LT_OK) {
+        i2c_map.pending = 0U;
+        i2c_slave_diagnostics(r, rlen);
+        RB_Debug_I2CStartup(r, *rlen);
+    }
     return status;
 }
 
@@ -778,7 +807,7 @@ uint8_t rblink_platform_i2c(const uint8_t *p, uint8_t len, uint8_t *r, uint8_t *
     }
     if ((p[0] == 9U) || (p[0] == 10U)) return i2c_tcu_command(p, len, r, rlen);
     if (i2c_tcu.enabled) return LT_BUSY;
-    if ((p[0] >= 11U) && (p[0] <= 13U)) return i2c_map_command(p, len);
+    if ((p[0] >= 11U) && (p[0] <= 13U)) return i2c_map_command(p, len, r, rlen);
     if (p[0] == 6U) return i2c_slave_config(p, len, 100000U, 0U);
     if ((p[0] == 7U) || (p[0] == 8U)) return i2c_slave_command(p, len, r, rlen);
     if (p[0] == 0U) return i2c_config(p, len);
